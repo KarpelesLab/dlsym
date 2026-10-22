@@ -59,7 +59,7 @@ private:
 };
 
 /** Not trivially copyable: only usable behind pointers. */
-class Name {
+class CPP_API Name {
 public:
     ~Name();
     const char *s;
