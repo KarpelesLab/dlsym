@@ -33,6 +33,17 @@ Bindings:
       --safe <glob>         declare matching functions `safe fn` (callable
                             without `unsafe`); only for functions that are
                             sound with any arguments (repeatable)
+      --safe-handle <glob>  make the --owned handle methods of matching
+                            functions safe (the raw functions stay unsafe);
+                            only for functions that are sound with any live
+                            handle and any other arguments (repeatable)
+
+Functions taking an --owned handle first become methods of its wrapper:
+demo_handle_get(h) -> h.get(), gzwrite(f, ..) -> f.gzwrite(..).
+
+Options can be read from a file with @<file>: arguments separated by
+whitespace or newlines, \"double quotes\" for arguments containing spaces, and
+# comments.
 
 Selection (declarations from the headers and the files they #include \"...\"):
       --header-dir <dir>    also bind declarations from headers under <dir>
@@ -61,6 +72,7 @@ struct Args {
     parse: parse::Options,
     optional: Vec<String>,
     safe: Vec<String>,
+    safe_handle: Vec<String>,
     owned: Vec<emit::Owned>,
     no_probe: bool,
     quiet: bool,
@@ -86,6 +98,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "-l" | "--lib" => a.libs.push(value(&arg)?),
             "--optional" => a.optional.push(value(&arg)?),
             "--safe" => a.safe.push(value(&arg)?),
+            "--safe-handle" => a.safe_handle.push(value(&arg)?),
             "--owned" => a.owned.push(emit::Owned::parse(&value(&arg)?)?),
             "--no-probe" => a.no_probe = true,
             "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
@@ -108,6 +121,65 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
     }
     a.parse.headers = a.headers.clone();
     Ok(Command::Run(Box::new(a)))
+}
+
+/// Replaces each `@file` argument with the arguments read from `file`
+/// (recursively, up to a fixed depth).
+fn expand_args(args: impl IntoIterator<Item = String>, depth: u32) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for arg in args {
+        match arg.strip_prefix('@') {
+            Some(path) if !path.is_empty() => {
+                if depth >= 8 {
+                    return Err(format!("@{path}: argument files nested too deeply"));
+                }
+                let text = std::fs::read_to_string(path).map_err(|e| format!("@{path}: {e}"))?;
+                let words = split_args_file(&text).map_err(|e| format!("@{path}: {e}"))?;
+                out.extend(expand_args(words, depth + 1)?);
+            }
+            _ => out.push(arg),
+        }
+    }
+    Ok(out)
+}
+
+/// Splits an argument file: arguments are separated by whitespace,
+/// `"double quotes"` group (with `\"` and `\\` escapes), and `#` starts a
+/// comment running to the end of the line.
+fn split_args_file(text: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+        } else if c == '#' {
+            while chars.next().is_some_and(|c| c != '\n') {}
+        } else {
+            let mut word = String::new();
+            while let Some(&c) = chars.peek() {
+                if c.is_whitespace() {
+                    break;
+                }
+                chars.next();
+                if c != '"' {
+                    word.push(c);
+                    continue;
+                }
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') if matches!(chars.peek(), Some('"' | '\\')) => {
+                            word.extend(chars.next());
+                        }
+                        Some(c) => word.push(c),
+                        None => return Err("unterminated quote".into()),
+                    }
+                }
+            }
+            out.push(word);
+        }
+    }
+    Ok(out)
 }
 
 /// `zlib.h` -> `Zlib`, `foo-bar_baz.h` -> `FooBarBaz`.
@@ -134,21 +206,22 @@ fn struct_name_for(header: &Path) -> String {
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(std::env::args().skip(1)) {
-        Ok(Command::Run(a)) => a,
-        Ok(Command::Help) => {
-            print!("{USAGE}");
-            return ExitCode::SUCCESS;
-        }
-        Ok(Command::Version) => {
-            println!("dlsym-gen {}", env!("CARGO_PKG_VERSION"));
-            return ExitCode::SUCCESS;
-        }
-        Err(e) => {
-            eprint!("dlsym-gen: {e}\n\n{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
+    let args =
+        match expand_args(std::env::args().skip(1), 0).and_then(|a| parse_args(a.into_iter())) {
+            Ok(Command::Run(a)) => a,
+            Ok(Command::Help) => {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            Ok(Command::Version) => {
+                println!("dlsym-gen {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprint!("dlsym-gen: {e}\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+        };
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -192,6 +265,7 @@ fn run(args: &Args) -> Result<(), String> {
             library_names: args.libs.clone(),
             optional,
             safe: args.safe.clone(),
+            safe_handle: args.safe_handle.clone(),
             owned: args.owned.clone(),
             no_module_attributes: false,
             comment: vec![
@@ -320,5 +394,28 @@ mod tests {
         assert_eq!(r.libs, ["libx.so.1"]);
         assert_eq!(r.parse.clang_args, ["-DFOO", "-I", "inc"]);
         assert_eq!(r.parse.headers, [PathBuf::from("x.h")]);
+    }
+
+    #[test]
+    fn args_files() {
+        let words = split_args_file(
+            "# zlib\n--owned gzFile=gzclose,gzopen  # handles\n\
+             -l \"my lib.so\" a\"b c\"d \"q\\\"\\\\\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            words,
+            [
+                "--owned",
+                "gzFile=gzclose,gzopen",
+                "-l",
+                "my lib.so",
+                "ab cd",
+                "q\"\\"
+            ]
+        );
+        assert!(split_args_file("\"open").is_err());
+        assert_eq!(expand_args(["@".to_string()], 0).unwrap(), ["@"]);
+        assert!(expand_args(["@/nonexistent/args".to_string()], 0).is_err());
     }
 }

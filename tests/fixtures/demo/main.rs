@@ -61,6 +61,13 @@ fn main() {
     // SAFETY: never called, the symbol is missing.
     assert_eq!(unsafe { d.demo_not_implemented() }, None);
 
+    // `demo_handle_get` is `safe_handle`: safe as a method of an owned
+    // handle (which is always live), `unsafe` as a raw function.
+    // SAFETY: `demo_handle_new` has no preconditions.
+    let h = unsafe { d.demo_handle_new_owned(5) }.expect("handle");
+    assert_eq!(h.get(), 5);
+    drop(h);
+
     unsafe {
         // Globals.
         // `demo_add` and `demo_add_ten` each bumped the counter.
@@ -86,15 +93,21 @@ fn main() {
         d.demo_handle_free(h);
 
         // Owned handles are released exactly once, when dropped.
-        let h = d.demo_handle_new_owned(7).expect("handle");
+        let mut h = d.demo_handle_new_owned(7).expect("handle");
+        // Functions taking the handle first become methods, without the
+        // `demo_handle_` prefix; `const` handles borrow `self` shared.
+        assert_eq!(h.get(), 7);
+        h.set(11);
+        assert_eq!(h.get(), 11);
+        h.set(7);
         assert_eq!(d.demo_handle_get(h.as_raw()), 7);
-        assert_eq!(*d.demo_freed(), 1);
+        assert_eq!(*d.demo_freed(), 2);
         drop(h);
-        assert_eq!(*d.demo_freed(), 2);
-        let raw = d.demo_handle_new_owned(8).expect("handle").into_raw();
-        assert_eq!(*d.demo_freed(), 2);
-        d.demo_handle_free(raw);
         assert_eq!(*d.demo_freed(), 3);
+        let raw = d.demo_handle_new_owned(8).expect("handle").into_raw();
+        assert_eq!(*d.demo_freed(), 3);
+        d.demo_handle_free(raw);
+        assert_eq!(*d.demo_freed(), 4);
 
         // Callbacks in both directions.
         let mut offset: c_int = 1;

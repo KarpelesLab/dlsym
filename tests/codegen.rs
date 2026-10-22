@@ -74,6 +74,7 @@ fn demo_library() {
         .safe("demo_add")
         .safe("demo_is_even")
         .owned("demo_handle", "demo_handle_free", ["demo_handle_new"])
+        .safe_handle("demo_handle_get")
         // Probing the built library marks `demo_not_implemented` optional.
         .library_name(lib.to_str().unwrap())
         .generate()

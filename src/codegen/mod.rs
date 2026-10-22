@@ -180,6 +180,14 @@ impl Builder {
         self
     }
 
+    /// Makes the [`owned`](Self::owned) handle methods of matching functions
+    /// safe, leaving the raw functions `unsafe`. Only for functions that are
+    /// sound with any live handle and any values of their other arguments.
+    pub fn safe_handle(mut self, glob: impl Into<String>) -> Self {
+        self.emit.safe_handle.push(glob.into());
+        self
+    }
+
     /// Keeps (`true`) or drops (`false`, the default for the builder) the
     /// module-level `#![allow(..)]` attributes.
     pub fn module_attributes(mut self, keep: bool) -> Self {

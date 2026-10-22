@@ -26,6 +26,11 @@ pub struct Options {
     /// that are sound to call with any arguments (e.g. pure math, version
     /// queries).
     pub safe: Vec<String>,
+    /// Glob patterns of functions whose [`Owned`] handle methods are safe:
+    /// the function must be sound with any live handle and any values of
+    /// its other arguments (so typically none of them are pointers). The
+    /// raw function stays `unsafe`.
+    pub safe_handle: Vec<String>,
     /// Extra lines for the header comment (e.g. the source headers).
     pub comment: Vec<String>,
     /// Leave out the module-level `#![allow(..)]` attributes, for output
@@ -583,14 +588,7 @@ impl<'h> Emitter<'h> {
                 continue;
             };
             // The handle is what `free` takes: `T *` or a pointer typedef.
-            let ok = match &param.ty {
-                Type::Pointer { pointee, .. } => **pointee == Type::Named(o.type_name.clone()),
-                Type::Named(n) => {
-                    *n == o.type_name && matches!(self.resolve(&param.ty), Type::Pointer { .. })
-                }
-                _ => false,
-            };
-            if !ok {
+            if self.handle_param(&param.ty, &o.type_name).is_none() {
                 let _ = writeln!(
                     self.out,
                     "\n// skipped owned `{}`: `{}` does not take a `{0}` handle",
@@ -655,6 +653,7 @@ impl<'h> Emitter<'h> {
                 ty = o.type_name,
                 free = o.free,
             );
+            self.handle_methods(header, o, &wrapper, opts);
             for ctor in &o.constructors {
                 let Some(f) = functions.get(ctor.as_str()) else {
                     let _ = writeln!(
@@ -720,6 +719,142 @@ impl<'h> Emitter<'h> {
                 self.out,
                 "\nimpl {lib} {{\n{}}}\n",
                 ctor_methods.trim_end_matches('\n').to_owned() + "\n"
+            );
+        }
+    }
+
+    /// Whether a parameter of type `ty` takes an `owned` handle: `Some(true)`
+    /// for `const T *`, `Some(false)` for `T *` or a pointer typedef.
+    fn handle_param(&self, ty: &Type, type_name: &str) -> Option<bool> {
+        match ty {
+            Type::Pointer { pointee, is_const } if **pointee == Type::Named(type_name.into()) => {
+                Some(*is_const)
+            }
+            Type::Named(n)
+                if n == type_name && matches!(self.resolve(ty), Type::Pointer { .. }) =>
+            {
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+
+    /// Emits methods on an owned handle's wrapper for every function taking
+    /// the handle as its first argument: `demo_handle_get(h)` becomes
+    /// `h.get()` (the `{type}_` prefix is dropped when that leaves a free
+    /// name), `gzwrite(f, ..)` becomes `f.gzwrite(..)`.
+    fn handle_methods(&mut self, header: &Header, o: &Owned, wrapper: &str, opts: &Options) {
+        const RESERVED: &[&str] = &["from_raw", "as_raw", "into_raw", "library", "drop", "fmt"];
+        let candidates: Vec<(&Function, bool)> = header
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Function(f)
+                    if !f.variadic && f.name != o.free && !o.constructors.contains(&f.name) =>
+                {
+                    let first = f.params.first()?;
+                    Some((f, self.handle_param(&first.ty, &o.type_name)?))
+                }
+                _ => None,
+            })
+            .collect();
+        let prefix = format!("{}_", o.type_name);
+        let short: Vec<Option<&str>> = candidates
+            .iter()
+            .map(|(f, _)| {
+                f.name
+                    .strip_prefix(&prefix)
+                    .filter(|s| !s.is_empty() && !s.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .collect();
+        let mut used: HashSet<&str> = RESERVED.iter().copied().collect();
+        let mut methods = String::new();
+        for (i, (f, is_const)) in candidates.iter().enumerate() {
+            // Short names that clash with another function's name (full or
+            // short) or a wrapper method keep the full name.
+            let name = match short[i] {
+                Some(s)
+                    if !used.contains(s)
+                        && !candidates.iter().any(|(g, _)| g.name == s)
+                        && short.iter().filter(|t| **t == Some(s)).count() == 1 =>
+                {
+                    s
+                }
+                _ => f.name.as_str(),
+            };
+            if !used.insert(name) {
+                continue;
+            }
+            let names: Vec<String> = f.params[1..]
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    p.name
+                        .as_deref()
+                        .map_or_else(|| format!("arg{}", i + 1), ident)
+                })
+                .collect();
+            let params: String = names
+                .iter()
+                .zip(&f.params[1..])
+                .map(|(n, p)| format!(", {n}: {}", rust_type(&p.ty)))
+                .collect();
+            let optional = opts.optional.iter().any(|p| glob(p, &f.name));
+            let ret = match (&f.ret, optional) {
+                (Type::Void, false) => String::new(),
+                (Type::Void, true) => " -> ::core::option::Option<()>".into(),
+                (t, false) => format!(" -> {}", rust_type(t)),
+                (t, true) => format!(" -> ::core::option::Option<{}>", rust_type(t)),
+            };
+            let call = format!(
+                "self.lib.{}(self.raw{})",
+                ident(&f.name),
+                names.iter().map(|n| format!(", {n}")).collect::<String>()
+            );
+            let receiver = if *is_const { "&self" } else { "&mut self" };
+            let _ = writeln!(
+                methods,
+                "    /// Calls [`{0}`]({1}::{0}) on this handle.",
+                ident(&f.name),
+                ident(&opts.struct_name)
+            );
+            if opts.safe.iter().any(|p| glob(p, &f.name)) {
+                let _ = writeln!(
+                    methods,
+                    "    #[allow(clippy::too_many_arguments)]\n    \
+                         pub fn {}({receiver}{params}){ret} {{\n        {call}\n    }}\n",
+                    ident(name)
+                );
+            } else if opts.safe_handle.iter().any(|p| glob(p, &f.name)) {
+                let _ = writeln!(
+                    methods,
+                    "    #[allow(clippy::too_many_arguments)]\n    \
+                         pub fn {}({receiver}{params}){ret} {{\n        \
+                             // SAFETY: the handle is live, and `{}` is declared sound\n        \
+                             // with any live handle and any other arguments.\n        \
+                             unsafe {{ {call} }}\n    }}\n",
+                    ident(name),
+                    f.name
+                );
+            } else {
+                let _ = writeln!(
+                    methods,
+                    "    ///\n    /// # Safety\n    ///\n    \
+                         /// Same as calling `{0}` with the handle, which must not release it.\n    \
+                         #[allow(clippy::too_many_arguments)]\n    \
+                         pub unsafe fn {1}({receiver}{params}){ret} {{\n        \
+                             // SAFETY: the handle is live; the rest is forwarded to the caller.\n        \
+                             unsafe {{ {call} }}\n    }}\n",
+                    f.name,
+                    ident(name)
+                );
+            }
+        }
+        if !methods.is_empty() {
+            let _ = write!(
+                self.out,
+                "\nimpl {wrapper}<'_> {{\n{}}}\n",
+                methods.trim_end_matches('\n').to_owned() + "\n"
             );
         }
     }

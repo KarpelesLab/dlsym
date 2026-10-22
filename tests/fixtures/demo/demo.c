@@ -32,6 +32,7 @@ demo_handle *demo_handle_new(int value) {
 }
 
 int demo_handle_get(const demo_handle *h) { return h->value; }
+void demo_handle_set(demo_handle *h, int value) { h->value = value; }
 void demo_handle_free(demo_handle *h) { demo_freed++; free(h); }
 
 int demo_call(demo_callback cb, void *user, int value) { return cb(user, value) * 2; }

@@ -110,6 +110,7 @@ DEMO_API demo_rect demo_rect_make(int32_t x, int32_t y, int32_t w, int32_t h);
 DEMO_API int demo_area(const demo_rect *r);
 DEMO_API demo_handle *demo_handle_new(int value);
 DEMO_API int demo_handle_get(const demo_handle *h);
+DEMO_API void demo_handle_set(demo_handle *h, int value);
 DEMO_API void demo_handle_free(demo_handle *h);
 DEMO_API int demo_call(demo_callback cb, void *user, int value);
 DEMO_API int demo_sum(int count, ...);

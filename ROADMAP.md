@@ -77,7 +77,7 @@ or gate any new one to the binary.
 ### Loader
 
 - [x] CI: Linux aarch64, macOS x86_64, windows-gnu, FreeBSD (VM)
-- [ ] CI: musl (dynamically linked only: statically linked musl binaries
+- [x] CI: musl (dynamically linked only: statically linked musl binaries
       cannot `dlopen`)
 - [x] `Library::path`, `AddressInfo::of`, `Symbol::info` (`dlinfo`, dyld,
       `dladdr`, `GetModuleFileNameW`)
@@ -116,12 +116,16 @@ The step from *bindings* to *safe bindings*:
 - [x] Ownership: `--owned TYPE=FREE,CTOR...` generates an RAII wrapper
       whose `Drop` calls the free function and which borrows the
       `library!` struct, plus `CTOR_owned` constructors
-- [ ] **Open question:** keep growing CLI/`Builder` options, or move
-      annotations into a `dlsym-gen.toml` file per library? Candidates:
+- [x] Methods on owned handles: `gzwrite(f, ..)` → `f.gzwrite(..)`,
+      `demo_handle_get(h)` → `h.get()`; `&self` for `const T *`, `&mut self`
+      otherwise; `--safe-handle` makes a method safe without making the raw
+      function safe
+- [x] Annotations stay CLI/`Builder` options (no new file format); long
+      lists go in `@file` argument files
+- [ ] Next annotations:
   - pointer nullability; `const char *` ↔ `&CStr`
   - `(ptr, len)` pairs ↔ slices
   - errors, e.g. "negative return means `errno`", generating `Result`
-  - methods on owned handles (`gzwrite(f, ..)` → `f.gzwrite(..)`)
 - [ ] Possibly ship annotation sets for common system libraries
 
 ### Release

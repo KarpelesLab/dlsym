@@ -124,7 +124,10 @@ What it handles:
 - Owned handles: `--owned gzFile=gzclose,gzopen` generates a `GzFile<'lib>`
   that calls `gzclose` when dropped, and a `gzopen_owned` constructor. The
   handle borrows the bindings, so it cannot leak, be closed twice, or outlive
-  the library.
+  the library. Functions taking the handle first become its methods
+  (`f.gzwrite(..)`, or `h.get()` for `demo_handle_get(h)`), and
+  `--safe-handle gzeof` makes a method safe while the raw function, which
+  would accept any pointer, stays `unsafe`.
 - Struct layouts are checked at compile time against the C compiler's
   (`size_of`, `align_of`, `offset_of!`). `--target` generates for another
   platform; bindings built for the wrong one fail to compile.
@@ -147,6 +150,9 @@ What it handles:
   PulseAudio, ncurses, readline, libpcap, libusb, libudev, libevent,
   libjpeg, libtiff, libwebp, fontconfig, gdbm and libuuid: every generated
   module compiles.
+
+Long option lists can live in a file, passed as `@zlib.args` (whitespace-
+separated arguments, `"quotes"`, `#` comments).
 
 From a `build.rs`, use `dlsym::codegen::Builder` (see the
 [`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).
