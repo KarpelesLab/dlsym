@@ -26,6 +26,42 @@ pub enum Item {
     Typedef(Typedef),
     /// A constant (from a `#define`).
     Const(Const),
+    /// A function-like `#define` that wraps a call to a bound function.
+    MacroFn(MacroFn),
+}
+
+/// A function-like macro whose body is a single call to a bound function,
+/// such as zlib's
+/// `#define deflateInit(strm, level) deflateInit_((strm), (level), ZLIB_VERSION, (int)sizeof(z_stream))`.
+///
+/// It becomes a method that forwards to the function. Parameter types are
+/// taken from the parameters of the called function they are passed to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MacroFn {
+    /// The macro's name.
+    pub name: String,
+    /// The macro's parameter names.
+    pub params: Vec<String>,
+    /// The called function.
+    pub target: String,
+    /// The arguments passed to it.
+    pub args: Vec<MacroArg>,
+}
+
+/// One argument of a [`MacroFn`] call.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum MacroArg {
+    /// The macro parameter at this index.
+    Param(usize),
+    /// An integer literal.
+    Int(i128),
+    /// A string literal (without the terminating NUL).
+    Str(Vec<u8>),
+    /// A constant (another `#define`), by name.
+    Const(String),
+    /// `sizeof` a type, by its Rust name.
+    SizeOf(String),
 }
 
 /// A calling convention.

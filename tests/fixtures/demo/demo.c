@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
 
 DEMO_API const int demo_const_global = 1234;
 DEMO_API int demo_counter = 0;
@@ -88,3 +89,7 @@ static int doubler(void *user, int value) { (void)user; return value * 2; }
 demo_callback demo_get_callback(void) { return doubler; }
 
 long double demo_long_double(void) { return 1.0L; }
+
+int demo_check(const char *version, size_t size, int flags) {
+    return strcmp(version, DEMO_VERSION) == 0 && size == sizeof(demo_rect) && flags == 7;
+}

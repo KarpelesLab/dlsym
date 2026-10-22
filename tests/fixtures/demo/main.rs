@@ -51,13 +51,20 @@ fn main() {
     assert_eq!(d.demo_add(2, 3), 5);
     assert!(d.demo_is_even(4));
 
+    // Function-like macros wrapping a call are methods too; this one
+    // forwards to the `safe` `demo_add`, so it is safe as well.
+    assert_eq!(d.demo_add_ten(5), 15);
+    // SAFETY: plain integer arguments.
+    assert_eq!(unsafe { d.demo_check_default(7) }, 1);
+
     // `#[optional]` functions that the library lacks return `None`.
     // SAFETY: never called, the symbol is missing.
     assert_eq!(unsafe { d.demo_not_implemented() }, None);
 
     unsafe {
         // Globals.
-        assert_eq!(*d.demo_counter(), 1);
+        // `demo_add` and `demo_add_ten` each bumped the counter.
+        assert_eq!(*d.demo_counter(), 2);
         *d.demo_counter() = 10;
         d.demo_add(0, 0);
         assert_eq!(*d.demo_counter(), 11);

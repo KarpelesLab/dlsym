@@ -123,6 +123,13 @@ DEMO_API int demo_anon_sum(const struct demo_anon *a);
 DEMO_API int demo_type(int type);
 DEMO_API demo_callback demo_get_callback(void);
 DEMO_API long double demo_long_double(void);
+DEMO_API int demo_check(const char *version, size_t size, int flags);
+
+/* Function-like macros wrapping a call become methods; others are ignored. */
+#define demo_check_default(flags) demo_check(DEMO_VERSION, sizeof(demo_rect), (flags))
+#define demo_add_ten(x) demo_add((int)(x), 10)
+#define demo_twice(x) ((x) * 2)
+
 /* Declared but not defined in the library: bound as #[optional]. */
 DEMO_API int demo_not_implemented(void);
 

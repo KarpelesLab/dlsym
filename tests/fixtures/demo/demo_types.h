@@ -10,4 +10,7 @@ typedef struct demo_point {
     int32_t y; /**< Vertical. */
 } demo_point;
 
+/* Redefined identically in demo.h, which C allows. */
+#define DEMO_ANSWER 42
+
 #endif

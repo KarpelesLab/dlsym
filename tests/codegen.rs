@@ -109,6 +109,7 @@ fn demo_library() {
         "pub const DEMO_VERSION: &::core::ffi::CStr = c\"1.2.3\";",
         "pub fn demo_sum(count: ::core::ffi::c_int, ...) -> ::core::ffi::c_int;",
         "pub safe fn demo_add(",
+        "pub fn demo_add_ten(&self, x: ::core::ffi::c_int) -> ::core::ffi::c_int {",
         "#[optional]\n            pub fn demo_not_implemented()",
     ] {
         assert!(code.contains(needle), "missing {needle:?}");
@@ -116,6 +117,10 @@ fn demo_library() {
     assert!(
         !code.contains("demo_long_double"),
         "long double is unsupported"
+    );
+    assert!(
+        !code.contains("demo_twice"),
+        "only macros wrapping a call are bound"
     );
     assert!(
         !code.contains("demo_inline"),

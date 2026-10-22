@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use super::ir::{
-    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, Record, RecordBody, RecordKind,
-    Type, Typedef, Var,
+    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, Record,
+    RecordBody, RecordKind, Type, Typedef, Var,
 };
 
 /// Options controlling code generation.
@@ -74,9 +74,11 @@ pub fn emit(header: &Header, opts: &Options) -> String {
             Item::Enum(en) => e.enumeration(en),
             Item::Const(c) => e.constant(c),
             Item::Function(_) | Item::Var(_) => functions.push(item),
+            Item::MacroFn(_) => {}
         }
     }
     e.library(&functions, opts);
+    e.macro_fns(header, opts);
     e.out
 }
 
@@ -480,6 +482,134 @@ impl<'h> Emitter<'h> {
                 list.join(", ")
             );
         }
+    }
+
+    /// Emits methods wrapping function-like macros (see [`MacroFn`]).
+    fn macro_fns(&mut self, header: &Header, opts: &Options) {
+        let mut functions = HashMap::new();
+        let mut consts = HashMap::new();
+        let mut types = HashSet::new();
+        for item in &header.items {
+            match item {
+                Item::Function(f) => {
+                    functions.insert(f.name.as_str(), f);
+                }
+                Item::Const(c) => {
+                    consts.insert(c.name.as_str(), &c.value);
+                }
+                Item::Typedef(t) => {
+                    types.insert(t.name.as_str());
+                }
+                Item::Record(r) => {
+                    types.insert(r.name.as_str());
+                }
+                Item::Enum(Enum { name: Some(n), .. }) => {
+                    types.insert(n.as_str());
+                }
+                _ => {}
+            }
+        }
+        let mut methods = String::new();
+        for item in &header.items {
+            let Item::MacroFn(m) = item else { continue };
+            match self.macro_fn(m, &functions, &consts, &types, opts) {
+                Some(text) => methods.push_str(&text),
+                None => {
+                    let _ = writeln!(
+                        self.out,
+                        "\n// skipped macro `{}`: arguments not representable",
+                        m.name
+                    );
+                }
+            }
+        }
+        if !methods.is_empty() {
+            let _ = write!(
+                self.out,
+                "\nimpl {} {{\n{methods}}}\n",
+                ident(&opts.struct_name)
+            );
+        }
+    }
+
+    fn macro_fn(
+        &self,
+        m: &MacroFn,
+        functions: &HashMap<&str, &Function>,
+        consts: &HashMap<&str, &ConstValue>,
+        types: &HashSet<&str>,
+        opts: &Options,
+    ) -> Option<String> {
+        let f = functions.get(m.target.as_str())?;
+        if f.variadic || f.params.len() != m.args.len() {
+            return None;
+        }
+        let mut param_types = vec![None; m.params.len()];
+        let mut args = Vec::new();
+        for (arg, p) in m.args.iter().zip(&f.params) {
+            let ty = rust_type(&p.ty);
+            let is_ptr = matches!(p.ty, Type::Pointer { .. });
+            args.push(match arg {
+                MacroArg::Param(i) => {
+                    param_types[*i] = Some(ty);
+                    ident(&m.params[*i])
+                }
+                MacroArg::Int(v) => format!("{v} as {ty}"),
+                MacroArg::Str(bytes) if is_ptr => format!("{}.as_ptr()", c_string_literal(bytes)),
+                MacroArg::Const(name) => match consts.get(name.as_str())? {
+                    ConstValue::Str(_) if is_ptr => format!("{}.as_ptr()", ident(name)),
+                    ConstValue::Int(..) | ConstValue::Float(..) if !is_ptr => {
+                        format!("{} as {ty}", ident(name))
+                    }
+                    _ => return None,
+                },
+                MacroArg::SizeOf(t) if types.contains(t.as_str()) && !is_ptr => {
+                    format!("::core::mem::size_of::<{}>() as {ty}", ident(t))
+                }
+                _ => return None,
+            });
+        }
+        let params: Vec<String> = m
+            .params
+            .iter()
+            .zip(param_types)
+            .map(|(n, t)| Some(format!("{}: {}", ident(n), t?)))
+            .collect::<Option<_>>()?;
+        let optional = opts.optional.iter().any(|p| glob(p, &f.name));
+        let safe = opts.safe.iter().any(|p| glob(p, &f.name));
+        let ret = match (&f.ret, optional) {
+            (Type::Void, false) => String::new(),
+            (Type::Void, true) => " -> ::core::option::Option<()>".into(),
+            (t, false) => format!(" -> {}", rust_type(t)),
+            (t, true) => format!(" -> ::core::option::Option<{}>", rust_type(t)),
+        };
+        let target = ident(&f.name);
+        let call = format!("self.{target}({})", args.join(", "));
+        let mut out = format!(
+            "    /// Wraps the C macro `{}`, which calls [`{target}`](Self::{target}).\n",
+            m.name
+        );
+        if safe {
+            let _ = writeln!(
+                out,
+                "    #[allow(clippy::too_many_arguments)]\n    \
+                     pub fn {}(&self, {}){ret} {{\n        {call}\n    }}\n",
+                ident(&m.name),
+                params.join(", ")
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "    ///\n    /// # Safety\n    ///\n    /// Same as calling `{target}`.\n    \
+                     #[allow(clippy::too_many_arguments)]\n    \
+                     pub unsafe fn {}(&self, {}){ret} {{\n        \
+                         // SAFETY: forwarded to the caller.\n        \
+                         unsafe {{ {call} }}\n    }}\n",
+                ident(&m.name),
+                params.join(", ")
+            );
+        }
+        Some(out)
     }
 
     fn function(&self, f: &Function, opts: &Options) -> Result<String, String> {

@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 
 use super::clang::{self, Cursor, LibClang, Tu, Type as CType};
 use super::ir::{
-    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, Param, Record, RecordBody,
-    RecordKind, Type, Typedef, Var, Variant,
+    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, Param, Record,
+    RecordBody, RecordKind, Type, Typedef, Var, Variant,
 };
 
 /// Options for [`parse`].
@@ -134,7 +134,8 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     ctx.name_types(&top);
     let macros = ctx.roots(&top);
     ctx.finish_records();
-    let consts = evaluate_macros(lib, &args, &umbrella, &macros, &mut ctx);
+    let mut consts = evaluate_macros(lib, &args, &umbrella, &macros, &mut ctx);
+    consts.extend(ctx.macro_fns(&consts));
     let header = ctx.take_header(consts);
     Ok(Parsed {
         header,
@@ -239,6 +240,7 @@ struct Ctx<'tu, 'o> {
     types: Vec<(SortKey, Item)>,
     funcs: Vec<(SortKey, Item)>,
     func_names: HashSet<String>,
+    fn_macros: Vec<Cursor<'tu>>,
     value_names: HashSet<String>,
     warnings: Vec<String>,
     anon_count: usize,
@@ -272,6 +274,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             types: Vec::new(),
             funcs: Vec::new(),
             func_names: HashSet::new(),
+            fn_macros: Vec::new(),
             value_names: HashSet::new(),
             warnings: Vec::new(),
             anon_count: 0,
@@ -460,12 +463,15 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                     self.require_typedef(c, true);
                 }
                 clang::MACRO_DEFINITION
-                    if !c.is_function_like_macro()
-                        && !c.is_builtin_macro()
+                    if !c.is_builtin_macro()
                         && !name.starts_with("__")
                         && self.name_allowed(&name) =>
                 {
-                    macros.push((name, c));
+                    if c.is_function_like_macro() {
+                        self.fn_macros.push(c);
+                    } else {
+                        macros.push((name, c));
+                    }
                 }
                 _ => {}
             }
@@ -868,6 +874,42 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         }
     }
 
+    /// Turns function-like macros that wrap a single call to a bound
+    /// function into [`MacroFn`]s; others are ignored.
+    fn macro_fns(&mut self, consts: &[Item]) -> Vec<Item> {
+        let functions: HashSet<String> = self
+            .funcs
+            .iter()
+            .filter_map(|(_, i)| match i {
+                Item::Function(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let consts: HashSet<&str> = consts
+            .iter()
+            .filter_map(|i| match i {
+                Item::Const(c) => Some(c.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut types: HashSet<String> = self.typedefs.keys().cloned().collect();
+        types.extend(self.records.values().map(|r| r.name.clone()));
+        types.extend(self.enums.values().flatten().cloned());
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for c in std::mem::take(&mut self.fn_macros) {
+            let tokens: Vec<String> = self.tu.tokens(c).into_iter().map(|(_, s)| s).collect();
+            let name = c.spelling();
+            if self.func_names.contains(&name) || !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(m) = parse_macro_fn(&name, &tokens, &functions, &consts, &types) {
+                out.push(Item::MacroFn(m));
+            }
+        }
+        out
+    }
+
     fn take_header(&mut self, consts: Vec<Item>) -> Header {
         let mut types = std::mem::take(&mut self.types);
         for (usr, r) in self.records.drain() {
@@ -1001,8 +1043,11 @@ fn evaluate_macros(
     let mut out = Vec::new();
     let mut probes = String::from(umbrella);
     let mut numeric = Vec::new();
+    // C allows identical redefinitions (e.g. in gl.h and glext.h); keep the
+    // first.
+    let mut seen = HashSet::new();
     for (name, cursor) in macros {
-        if ctx.value_names.contains(name) {
+        if ctx.value_names.contains(name) || !seen.insert(name.as_str()) {
             continue;
         }
         let tokens = ctx.tu.tokens(*cursor);
@@ -1063,6 +1108,170 @@ fn evaluate_macros(
         }));
     }
     out
+}
+
+/// Parses `NAME(p1, p2) target(arg, ...)` from a macro's tokens, accepting
+/// only arguments that are parameters, literals, known constants, `sizeof`
+/// of a known type, or casts of those.
+fn parse_macro_fn(
+    name: &str,
+    tokens: &[String],
+    functions: &HashSet<String>,
+    consts: &HashSet<&str>,
+    types: &HashSet<String>,
+) -> Option<MacroFn> {
+    let t: Vec<&str> = tokens.iter().map(String::as_str).collect();
+    if t.first() != Some(&name) || t.get(1) != Some(&"(") {
+        return None;
+    }
+    let close = matching(&t, 1)?;
+    let mut params = Vec::new();
+    for group in split_commas(&t[2..close]) {
+        match group {
+            [p] if is_ident(p) => params.push((*p).to_owned()),
+            [] if close == 2 => {}
+            _ => return None,
+        }
+    }
+    let body = strip_parens(&t[close + 1..]);
+    let (target, rest) = body.split_first()?;
+    if !functions.contains(*target)
+        || rest.first() != Some(&"(")
+        || matching(rest, 0)? != rest.len() - 1
+    {
+        return None;
+    }
+    let mut used = vec![false; params.len()];
+    let mut args = Vec::new();
+    for arg in split_commas(&rest[1..rest.len() - 1]) {
+        let arg = macro_arg(arg, &params, consts, types)?;
+        if let MacroArg::Param(i) = arg
+            && std::mem::replace(&mut used[i], true)
+        {
+            return None;
+        }
+        args.push(arg);
+    }
+    if used.iter().any(|u| !u) {
+        return None;
+    }
+    Some(MacroFn {
+        name: name.to_owned(),
+        params,
+        target: (*target).to_owned(),
+        args,
+    })
+}
+
+fn macro_arg(
+    t: &[&str],
+    params: &[String],
+    consts: &HashSet<&str>,
+    types: &HashSet<String>,
+) -> Option<MacroArg> {
+    let t = strip_parens(t);
+    match t {
+        [id] if is_ident(id) => {
+            if let Some(i) = params.iter().position(|p| p == id) {
+                Some(MacroArg::Param(i))
+            } else if consts.contains(id) {
+                Some(MacroArg::Const((*id).to_owned()))
+            } else {
+                None
+            }
+        }
+        [lit] if lit.starts_with('"') => unescape_c_string(lit).map(MacroArg::Str),
+        [lit] => parse_c_int(lit).map(MacroArg::Int),
+        ["-", lit] => parse_c_int(lit).map(|v| MacroArg::Int(-v)),
+        ["sizeof", "(", ty @ .., ")"] => {
+            let ty = match ty {
+                [name] | ["struct" | "union" | "enum", name] => *name,
+                _ => return None,
+            };
+            types.contains(ty).then(|| MacroArg::SizeOf(ty.to_owned()))
+        }
+        // A cast: the argument is converted to the parameter type anyway.
+        ["(", ..] => {
+            let close = matching(t, 0)?;
+            let ty = &t[1..close];
+            let looks_like_type = !ty.is_empty()
+                && ty.iter().all(|s| is_ident(s) || *s == "*")
+                && !(ty.len() == 1 && params.iter().any(|p| p == ty[0]));
+            if !looks_like_type || close + 1 >= t.len() {
+                return None;
+            }
+            macro_arg(&t[close + 1..], params, consts, types)
+        }
+        _ => None,
+    }
+}
+
+/// Index of the bracket closing the one at `open`.
+fn matching(t: &[&str], open: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, s) in t.iter().enumerate().skip(open) {
+        match *s {
+            "(" => depth += 1,
+            ")" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Removes parentheses enclosing the whole sequence.
+fn strip_parens<'a, 'b>(mut t: &'a [&'b str]) -> &'a [&'b str] {
+    while t.first() == Some(&"(") && matching(t, 0) == Some(t.len() - 1) {
+        t = &t[1..t.len() - 1];
+    }
+    t
+}
+
+/// Splits on commas outside parentheses.
+fn split_commas<'a, 'b>(t: &'a [&'b str]) -> Vec<&'a [&'b str]> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0, 0);
+    for (i, s) in t.iter().enumerate() {
+        match *s {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            "," if depth == 0 => {
+                out.push(&t[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !t.is_empty() {
+        out.push(&t[start..]);
+    }
+    out
+}
+
+fn is_ident(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Parses a C integer literal (decimal, hex, octal, binary; any suffix).
+fn parse_c_int(lit: &str) -> Option<i128> {
+    let lit = lit.trim_end_matches(['u', 'U', 'l', 'L']);
+    let (digits, radix) = if let Some(h) = lit.strip_prefix("0x").or_else(|| lit.strip_prefix("0X"))
+    {
+        (h, 16)
+    } else if let Some(b) = lit.strip_prefix("0b").or_else(|| lit.strip_prefix("0B")) {
+        (b, 2)
+    } else if lit.len() > 1 && lit.starts_with('0') {
+        (&lit[1..], 8)
+    } else {
+        (lit, 10)
+    };
+    i128::from_str_radix(&digits.replace('\'', ""), radix).ok()
 }
 
 fn is_integer(t: &Type) -> bool {
@@ -1142,6 +1351,48 @@ mod tests {
         assert!(glob("*", ""));
         assert!(glob("a*b*c", "aXXbYYc"));
         assert!(!glob("a*b*c", "aXXbYY"));
+    }
+
+    #[test]
+    fn macro_functions() {
+        let tok = |s: &str| s.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let functions: HashSet<String> = ["deflateInit_".to_owned()].into();
+        let consts: HashSet<&str> = ["ZLIB_VERSION"].into();
+        let types: HashSet<String> = ["z_stream".to_owned()].into();
+        let m = parse_macro_fn(
+            "deflateInit",
+            &tok("deflateInit ( strm , level ) deflateInit_ ( ( strm ) , ( level ) , ZLIB_VERSION , ( int ) sizeof ( z_stream ) )"),
+            &functions,
+            &consts,
+            &types,
+        )
+        .unwrap();
+        assert_eq!(m.params, ["strm", "level"]);
+        assert_eq!(
+            m.args,
+            [
+                MacroArg::Param(0),
+                MacroArg::Param(1),
+                MacroArg::Const("ZLIB_VERSION".into()),
+                MacroArg::SizeOf("z_stream".into()),
+            ]
+        );
+        // Anything else is rejected.
+        for body in [
+            "f ( x ) other_fn ( x )",
+            "f ( x ) deflateInit_ ( x , x )",
+            "f ( x , y ) deflateInit_ ( x )",
+            "f ( x ) deflateInit_ ( x + 1 )",
+            "f ( x ) ( ( x ) -> have ? 1 : 0 )",
+        ] {
+            assert!(
+                parse_macro_fn("f", &tok(body), &functions, &consts, &types).is_none(),
+                "{body}"
+            );
+        }
+        assert_eq!(parse_c_int("0x10UL"), Some(16));
+        assert_eq!(parse_c_int("017"), Some(15));
+        assert_eq!(parse_c_int("0"), Some(0));
     }
 
     #[test]
