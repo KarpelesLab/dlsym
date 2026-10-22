@@ -1223,7 +1223,62 @@ fn scope_prefix(c: Cursor<'_>) -> String {
 /// The Rust name of a declaration: its name qualified with `_` (`ns_f` for
 /// `ns::f`, just `f` in C).
 fn scoped_name(c: Cursor<'_>) -> String {
-    scope_prefix(c) + &c.spelling()
+    scope_prefix(c) + &operator_name(&c.spelling())
+}
+
+/// Spells C++ operator functions as identifiers: `operator<<` ->
+/// `operator_shl`, `operator bool` -> `operator_bool`.
+fn operator_name(spelling: &str) -> String {
+    let Some(op) = spelling
+        .strip_prefix("operator")
+        .filter(|op| !op.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+    else {
+        return spelling.to_owned();
+    };
+    let op = op.trim();
+    let name = match op {
+        "+" => "add",
+        "-" => "sub",
+        "*" => "mul",
+        "/" => "div",
+        "%" => "rem",
+        "^" => "bitxor",
+        "&" => "bitand",
+        "|" => "bitor",
+        "~" => "bitnot",
+        "!" => "not",
+        "=" => "assign",
+        "<" => "lt",
+        ">" => "gt",
+        "<=" => "le",
+        ">=" => "ge",
+        "==" => "eq",
+        "!=" => "ne",
+        "<=>" => "cmp",
+        "<<" => "shl",
+        ">>" => "shr",
+        "&&" => "and",
+        "||" => "or",
+        "++" => "inc",
+        "--" => "dec",
+        "," => "comma",
+        "->" => "arrow",
+        "->*" => "arrow_star",
+        "()" => "call",
+        "[]" => "index",
+        "+=" => "add_assign",
+        "-=" => "sub_assign",
+        "*=" => "mul_assign",
+        "/=" => "div_assign",
+        "%=" => "rem_assign",
+        "^=" => "bitxor_assign",
+        "&=" => "bitand_assign",
+        "|=" => "bitor_assign",
+        "<<=" => "shl_assign",
+        ">>=" => "shr_assign",
+        _ => return format!("operator_{}", sanitize_name(op)),
+    };
+    format!("operator_{name}")
 }
 
 /// The C++ name of a declaration (`ns::Class::f`), as matched by
@@ -1762,6 +1817,13 @@ mod tests {
             "const_geo_point_ptr"
         );
         assert_eq!(type_suffix(&Type::Fixed(64, false)), "u64");
+        assert_eq!(operator_name("operator<<"), "operator_shl");
+        assert_eq!(operator_name("operator new[]"), "operator_new");
+        assert_eq!(
+            operator_name("operator unsigned int"),
+            "operator_unsigned_int"
+        );
+        assert_eq!(operator_name("operators"), "operators");
     }
 
     #[test]
