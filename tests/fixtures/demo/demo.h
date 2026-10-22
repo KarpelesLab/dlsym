@@ -101,6 +101,7 @@ struct demo_keywords {
 
 DEMO_API extern const int demo_const_global;
 DEMO_API extern int demo_counter;
+DEMO_API extern int demo_freed;
 DEMO_API extern const char *const demo_names[];
 
 DEMO_API int demo_add(int a, int b);

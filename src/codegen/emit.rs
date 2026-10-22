@@ -32,6 +32,45 @@ pub struct Options {
     /// pulled in with `include!` (which rejects inner attributes). Put
     /// [`ALLOW_ATTRIBUTES`] on the module around the `include!` instead.
     pub no_module_attributes: bool,
+    /// Handle types to wrap in RAII owners; see [`Owned`].
+    pub owned: Vec<Owned>,
+}
+
+/// An owned handle type: a pointer returned by `constructors` and released
+/// by `free`.
+///
+/// Generates a wrapper (e.g. `GzFile<'lib>` for `gzFile`) that calls `free`
+/// when dropped and borrows the bindings struct, so the handle can neither
+/// leak, be freed twice, nor outlive the library. Each constructor gets a
+/// `{name}_owned` method returning `Option<Wrapper>` (`None` for null).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owned {
+    /// The C type of the handle: either the pointee (`demo_handle` for
+    /// `demo_handle *`) or a pointer typedef (`gzFile`).
+    pub type_name: String,
+    /// The function releasing a handle; it takes the handle as its only
+    /// argument.
+    pub free: String,
+    /// Functions returning a new handle that the caller owns.
+    pub constructors: Vec<String>,
+}
+
+impl Owned {
+    /// Parses the `TYPE=FREE[,CONSTRUCTOR...]` command-line syntax.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let (ty, rest) = spec
+            .split_once('=')
+            .ok_or_else(|| format!("expected TYPE=FREE[,CONSTRUCTOR...], got {spec:?}"))?;
+        let mut fns = rest.split(',').map(str::trim).filter(|s| !s.is_empty());
+        let free = fns
+            .next()
+            .ok_or_else(|| format!("missing free function in {spec:?}"))?;
+        Ok(Owned {
+            type_name: ty.trim().to_owned(),
+            free: free.to_owned(),
+            constructors: fns.map(str::to_owned).collect(),
+        })
+    }
 }
 
 /// The lints generated code needs allowed, as an outer attribute for a
@@ -79,6 +118,7 @@ pub fn emit(header: &Header, opts: &Options) -> String {
     }
     e.library(&functions, opts);
     e.macro_fns(header, opts);
+    e.owned(header, opts);
     e.out
 }
 
@@ -484,6 +524,197 @@ impl<'h> Emitter<'h> {
         }
     }
 
+    /// Emits RAII wrappers for [`Options::owned`] handle types.
+    fn owned(&mut self, header: &Header, opts: &Options) {
+        let functions: HashMap<&str, &Function> = header
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Function(f) => Some((f.name.as_str(), f)),
+                _ => None,
+            })
+            .collect();
+        let mut taken: HashSet<String> = header
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Typedef(t) => Some(t.name.clone()),
+                Item::Record(r) => Some(r.name.clone()),
+                Item::Enum(e) => e.name.clone(),
+                _ => None,
+            })
+            .collect();
+        let method_names: HashSet<&str> = header
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Function(f) => Some(f.name.as_str()),
+                Item::Var(v) => Some(v.name.as_str()),
+                Item::MacroFn(m) => Some(m.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let lib = ident(&opts.struct_name);
+        let mut ctor_methods = String::new();
+        for o in &opts.owned {
+            let Some(free) = functions.get(o.free.as_str()) else {
+                let _ = writeln!(
+                    self.out,
+                    "\n// skipped owned `{}`: no function `{}`",
+                    o.type_name, o.free
+                );
+                continue;
+            };
+            let [param] = free.params.as_slice() else {
+                let _ = writeln!(
+                    self.out,
+                    "\n// skipped owned `{}`: `{}` must take one argument",
+                    o.type_name, o.free
+                );
+                continue;
+            };
+            // The handle is what `free` takes: `T *` or a pointer typedef.
+            let ok = match &param.ty {
+                Type::Pointer { pointee, .. } => **pointee == Type::Named(o.type_name.clone()),
+                Type::Named(n) => {
+                    *n == o.type_name && matches!(self.resolve(&param.ty), Type::Pointer { .. })
+                }
+                _ => false,
+            };
+            if !ok {
+                let _ = writeln!(
+                    self.out,
+                    "\n// skipped owned `{}`: `{}` does not take a `{0}` handle",
+                    o.type_name, o.free
+                );
+                continue;
+            }
+            let raw = rust_type(&param.ty);
+            let mut wrapper = camel_case(&o.type_name);
+            while !taken.insert(wrapper.clone()) {
+                wrapper.push_str("Owned");
+            }
+            let free_call = format!("self.lib.{}(self.raw)", ident(&free.name));
+            let _ = writeln!(
+                self.out,
+                "\n/// An owned `{ty}` handle, released with `{free}` when dropped.\n\
+                 ///\n\
+                 /// It borrows the [`{lib}`] it came from, so it cannot outlive the library.\n\
+                 pub struct {wrapper}<'lib> {{\n    \
+                     raw: {raw},\n    \
+                     lib: &'lib {lib},\n\
+                 }}\n\n\
+                 impl<'lib> {wrapper}<'lib> {{\n    \
+                     /// Takes ownership of `raw`. Returns `None` if it is null.\n    \
+                     ///\n    \
+                     /// # Safety\n    \
+                     ///\n    \
+                     /// `raw` must be a live handle from `lib` that nothing else releases.\n    \
+                     pub unsafe fn from_raw(lib: &'lib {lib}, raw: {raw}) -> ::core::option::Option<Self> {{\n        \
+                         if (raw as *const ::core::ffi::c_void).is_null() {{\n            \
+                             ::core::option::Option::None\n        \
+                         }} else {{\n            \
+                             ::core::option::Option::Some(Self {{ raw, lib }})\n        \
+                         }}\n    \
+                     }}\n\n    \
+                     /// Returns the handle, still owned by `self`.\n    \
+                     pub fn as_raw(&self) -> {raw} {{\n        \
+                         self.raw\n    \
+                     }}\n\n    \
+                     /// Gives up ownership: the caller must release the handle.\n    \
+                     pub fn into_raw(self) -> {raw} {{\n        \
+                         let raw = self.raw;\n        \
+                         ::core::mem::forget(self);\n        \
+                         raw\n    \
+                     }}\n\n    \
+                     /// Returns the bindings the handle came from.\n    \
+                     pub fn library(&self) -> &'lib {lib} {{\n        \
+                         self.lib\n    \
+                     }}\n\
+                 }}\n\n\
+                 impl ::core::ops::Drop for {wrapper}<'_> {{\n    \
+                     fn drop(&mut self) {{\n        \
+                         // SAFETY: `self` owns the handle, so it is released exactly once.\n        \
+                         let _ = unsafe {{ {free_call} }};\n    \
+                     }}\n\
+                 }}\n\n\
+                 impl ::core::fmt::Debug for {wrapper}<'_> {{\n    \
+                     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{\n        \
+                         f.debug_tuple(\"{wrapper}\").field(&(self.raw as *const ::core::ffi::c_void)).finish()\n    \
+                     }}\n\
+                 }}",
+                ty = o.type_name,
+                free = o.free,
+            );
+            for ctor in &o.constructors {
+                let Some(f) = functions.get(ctor.as_str()) else {
+                    let _ = writeln!(
+                        self.out,
+                        "// skipped constructor `{ctor}`: no such function"
+                    );
+                    continue;
+                };
+                let method = format!("{ctor}_owned");
+                if f.variadic || rust_type(&f.ret) != raw || method_names.contains(method.as_str())
+                {
+                    let _ = writeln!(
+                        self.out,
+                        "// skipped constructor `{ctor}`: does not return a `{}`",
+                        o.type_name
+                    );
+                    continue;
+                }
+                let names: Vec<String> = f
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| p.name.as_deref().map_or_else(|| format!("arg{i}"), ident))
+                    .collect();
+                let params: Vec<String> = names
+                    .iter()
+                    .zip(&f.params)
+                    .map(|(n, p)| format!("{n}: {}", rust_type(&p.ty)))
+                    .collect();
+                let optional = opts.optional.iter().any(|p| glob(p, ctor));
+                let safe = opts.safe.iter().any(|p| glob(p, ctor));
+                let call = format!(
+                    "self.{}({}){}",
+                    ident(ctor),
+                    names.join(", "),
+                    if optional { "?" } else { "" }
+                );
+                let (qual, safety_doc) = if safe {
+                    ("", String::new())
+                } else {
+                    (
+                        "unsafe ",
+                        format!(
+                            "    ///\n    /// # Safety\n    ///\n    /// Same as calling `{ctor}`.\n"
+                        ),
+                    )
+                };
+                let _ = write!(
+                    ctor_methods,
+                    "    /// Calls `{ctor}` and takes ownership of the result (`None` if it is null).\n\
+                     {safety_doc}    \
+                     #[allow(clippy::too_many_arguments)]\n    \
+                     pub {qual}fn {method}(&self, {}) -> ::core::option::Option<{wrapper}<'_>> {{\n        \
+                         // SAFETY: `{ctor}` returns a new handle owned by the caller.\n        \
+                         unsafe {{ {wrapper}::from_raw(self, {call}) }}\n    \
+                     }}\n\n",
+                    params.join(", ")
+                );
+            }
+        }
+        if !ctor_methods.is_empty() {
+            let _ = write!(
+                self.out,
+                "\nimpl {lib} {{\n{}}}\n",
+                ctor_methods.trim_end_matches('\n').to_owned() + "\n"
+            );
+        }
+    }
+
     /// Emits methods wrapping function-like macros (see [`MacroFn`]).
     fn macro_fns(&mut self, header: &Header, opts: &Options) {
         let mut functions = HashMap::new();
@@ -860,6 +1091,22 @@ fn c_char_is_signed() -> bool {
     std::ffi::c_char::MIN != 0
 }
 
+/// `gz_file` / `gzFile` -> `GzFile`.
+fn camel_case(name: &str) -> String {
+    let mut out = String::new();
+    for part in name.split('_').filter(|p| !p.is_empty()) {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.extend(chars);
+        }
+    }
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert(0, 'H');
+    }
+    out
+}
+
 /// Escapes `name` if it collides with a Rust keyword.
 fn ident(name: &str) -> String {
     match name {
@@ -1146,6 +1393,18 @@ mod tests {
         ] {
             assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
         }
+    }
+
+    #[test]
+    fn owned_specs() {
+        let o = Owned::parse("gzFile=gzclose,gzopen, gzdopen").unwrap();
+        assert_eq!(o.type_name, "gzFile");
+        assert_eq!(o.free, "gzclose");
+        assert_eq!(o.constructors, ["gzopen", "gzdopen"]);
+        assert!(Owned::parse("gzFile").is_err());
+        assert!(Owned::parse("gzFile=").is_err());
+        assert_eq!(camel_case("demo_handle"), "DemoHandle");
+        assert_eq!(camel_case("gzFile"), "GzFile");
     }
 
     #[test]

@@ -6,6 +6,7 @@
 
 DEMO_API const int demo_const_global = 1234;
 DEMO_API int demo_counter = 0;
+DEMO_API int demo_freed = 0;
 DEMO_API const char *const demo_names[] = {"alpha", "beta", NULL};
 
 struct demo_handle { int value; };
@@ -31,7 +32,7 @@ demo_handle *demo_handle_new(int value) {
 }
 
 int demo_handle_get(const demo_handle *h) { return h->value; }
-void demo_handle_free(demo_handle *h) { free(h); }
+void demo_handle_free(demo_handle *h) { demo_freed++; free(h); }
 
 int demo_call(demo_callback cb, void *user, int value) { return cb(user, value) * 2; }
 

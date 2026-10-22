@@ -153,6 +153,26 @@ impl Builder {
         self
     }
 
+    /// Wraps a handle type in an RAII owner released by `free`, with
+    /// `{constructor}_owned` methods; see [`emit::Owned`].
+    pub fn owned<I, S>(
+        mut self,
+        type_name: impl Into<String>,
+        free: impl Into<String>,
+        constructors: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.emit.owned.push(emit::Owned {
+            type_name: type_name.into(),
+            free: free.into(),
+            constructors: constructors.into_iter().map(Into::into).collect(),
+        });
+        self
+    }
+
     /// Declares matching functions `safe fn`. Only for functions that are
     /// sound to call with any arguments.
     pub fn safe(mut self, glob: impl Into<String>) -> Self {

@@ -26,6 +26,10 @@ Bindings:
       --no-probe            do not open the library to probe its symbols
       --optional <glob>     mark matching functions and variables #[optional]
                             (repeatable)
+      --owned <TYPE=FREE[,CTOR...]>
+                            wrap a handle type in an RAII owner released by
+                            FREE, with CTOR_owned constructors returning it
+                            (repeatable, e.g. --owned gzFile=gzclose,gzopen)
       --safe <glob>         declare matching functions `safe fn` (callable
                             without `unsafe`); only for functions that are
                             sound with any arguments (repeatable)
@@ -57,6 +61,7 @@ struct Args {
     parse: parse::Options,
     optional: Vec<String>,
     safe: Vec<String>,
+    owned: Vec<emit::Owned>,
     no_probe: bool,
     quiet: bool,
 }
@@ -81,6 +86,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "-l" | "--lib" => a.libs.push(value(&arg)?),
             "--optional" => a.optional.push(value(&arg)?),
             "--safe" => a.safe.push(value(&arg)?),
+            "--owned" => a.owned.push(emit::Owned::parse(&value(&arg)?)?),
             "--no-probe" => a.no_probe = true,
             "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
             "--allow" => a.parse.allow.push(value(&arg)?),
@@ -186,6 +192,7 @@ fn run(args: &Args) -> Result<(), String> {
             library_names: args.libs.clone(),
             optional,
             safe: args.safe.clone(),
+            owned: args.owned.clone(),
             no_module_attributes: false,
             comment: vec![
                 format!("Source: {}", headers.join(", ")),

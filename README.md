@@ -41,6 +41,8 @@ assert_eq!(unsafe { cos.call((0.0,)) }, 1.0);
   requested: `get::<u64>` and safe `extern "C" fn` types don't compile.
 - A symbol whose address is null (`NullSymbol`) is told apart from a missing
   one (`SymbolNotFound`).
+- `Library::path()` and `AddressInfo::of(ptr)` / `Symbol::info()` (which
+  library, and which symbol, an address belongs to).
 - `Library::open_first([...])`, `Library::this()`, `library_filename("z")`,
   plus `os::unix::OpenOptions` (`RTLD_LAZY`/`GLOBAL`/`NODELETE`/`NOLOAD`/
   `DEEPBIND`, `dlvsym`) and `os::windows::OpenOptions`
@@ -103,10 +105,10 @@ dlsym-gen /usr/include/foo/foo.h -o src/foo.rs --struct Foo -- -I/usr/include/fo
 ```rust
 use zlib_dl::*;
 
-let z = unsafe { Zlib::open_default() }?;   // tries each -l name in turn
-let mut strm = z_stream::default();         // zeroed, like C's `= {0}`
-let version = ZLIB_VERSION.as_ptr();        // #defines become constants
-let rc = unsafe { z.deflateInit_(&mut strm, Z_BEST_COMPRESSION, version, size_of::<z_stream>() as i32) };
+let z = unsafe { Zlib::open_default() }?;       // tries each -l name in turn
+let mut strm = z_stream::default();             // zeroed, like C's `= {0}`
+let rc = unsafe { z.deflateInit(&mut strm, Z_BEST_COMPRESSION) }; // the C macro
+assert_eq!(rc, Z_OK);                           // #defines become constants
 ```
 
 What it handles:
@@ -117,9 +119,15 @@ What it handles:
   unexpected value from C is never undefined behaviour), typedefs and
   function pointers.
 - Object-like `#define`s, evaluated by clang: integers, floats, strings and
-  constant expressions.
+  constant expressions. Function-like macros that wrap a single call (zlib's
+  `deflateInit(strm, level)`) become methods too.
+- Owned handles: `--owned gzFile=gzclose,gzopen` generates a `GzFile<'lib>`
+  that calls `gzclose` when dropped, and a `gzopen_owned` constructor. The
+  handle borrows the bindings, so it cannot leak, be closed twice, or outlive
+  the library.
 - Struct layouts are checked at compile time against the C compiler's
-  (`size_of`, `align_of`, `offset_of!`).
+  (`size_of`, `align_of`, `offset_of!`). `--target` generates for another
+  platform; bindings built for the wrong one fail to compile.
 - It binds what the given headers declare, plus the headers they include
   with `#include "..."` (`--header-dir` adds more). Types from elsewhere are
   pulled in as needed: in full when used by value, opaque when only used

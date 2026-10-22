@@ -73,6 +73,7 @@ fn demo_library() {
         .struct_name("Demo")
         .safe("demo_add")
         .safe("demo_is_even")
+        .owned("demo_handle", "demo_handle_free", ["demo_handle_new"])
         // Probing the built library marks `demo_not_implemented` optional.
         .library_name(lib.to_str().unwrap())
         .generate()
@@ -109,6 +110,7 @@ fn demo_library() {
         "pub const DEMO_VERSION: &::core::ffi::CStr = c\"1.2.3\";",
         "pub fn demo_sum(count: ::core::ffi::c_int, ...) -> ::core::ffi::c_int;",
         "pub safe fn demo_add(",
+        "pub struct DemoHandle<'lib> {",
         "pub fn demo_add_ten(&self, x: ::core::ffi::c_int) -> ::core::ffi::c_int {",
         "#[optional]\n            pub fn demo_not_implemented()",
     ] {

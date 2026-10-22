@@ -107,13 +107,15 @@ or gate any new one to the binary.
 
 The step from *bindings* to *safe bindings*:
 
-- [ ] `dlsym-gen.toml` annotation file per library:
+- [x] Ownership: `--owned TYPE=FREE,CTOR...` generates an RAII wrapper
+      whose `Drop` calls the free function and which borrows the
+      `library!` struct, plus `CTOR_owned` constructors
+- [ ] **Open question:** keep growing CLI/`Builder` options, or move
+      annotations into a `dlsym-gen.toml` file per library? Candidates:
   - pointer nullability; `const char *` ↔ `&CStr`
   - `(ptr, len)` pairs ↔ slices
-  - ownership, e.g. "`foo_new` returns an object freed by `foo_free`",
-    generating an RAII wrapper whose `Drop` calls the free function and
-    which borrows the `library!` struct
   - errors, e.g. "negative return means `errno`", generating `Result`
+  - methods on owned handles (`gzwrite(f, ..)` → `f.gzwrite(..)`)
 - [ ] Possibly ship annotation sets for common system libraries
 
 ### Release

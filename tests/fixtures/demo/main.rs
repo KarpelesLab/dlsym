@@ -85,6 +85,17 @@ fn main() {
         assert_eq!(d.demo_handle_get(h), 99);
         d.demo_handle_free(h);
 
+        // Owned handles are released exactly once, when dropped.
+        let h = d.demo_handle_new_owned(7).expect("handle");
+        assert_eq!(d.demo_handle_get(h.as_raw()), 7);
+        assert_eq!(*d.demo_freed(), 1);
+        drop(h);
+        assert_eq!(*d.demo_freed(), 2);
+        let raw = d.demo_handle_new_owned(8).expect("handle").into_raw();
+        assert_eq!(*d.demo_freed(), 2);
+        d.demo_handle_free(raw);
+        assert_eq!(*d.demo_freed(), 3);
+
         // Callbacks in both directions.
         let mut offset: c_int = 1;
         let got = d.demo_call(Some(triple), (&raw mut offset).cast(), 5);
