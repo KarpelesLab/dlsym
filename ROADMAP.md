@@ -109,6 +109,25 @@ or gate any new one to the binary.
       the output; layout assertions reject bindings built for another target
 - [ ] Generate for several targets and merge them with `#[cfg]`
 
+### C++
+
+Symbols are found through the mangled names clang computes from the
+headers; nothing is ever demangled (mangled names do not carry enough type
+information to generate checked bindings).
+
+- [x] `--cpp` (automatic for `.hpp`/`.hh`/`.hxx`): functions and variables
+      in namespaces, public static members, `#[link_name]` with the target's
+      mangling (Itanium or MSVC), `_`-qualified names, overloads suffixed by
+      parameter types, references as pointers, `C-unwind` unless
+      `noexcept`, `enum class`, template specialization names; non-trivial
+      types are opaque and never passed by value; inline functions skipped
+- [ ] Non-virtual member functions (`this` first; `thiscall` on 32-bit
+      Windows), connected to `--owned` handles
+- [ ] Constructors/destructors for classes whose layout is checked
+- [ ] Trivially copyable template specializations by value (libclang does
+      not list their implicitly instantiated members, so all non-POD
+      specializations are currently treated as non-trivial)
+
 ### Safety layer
 
 The step from *bindings* to *safe bindings*:

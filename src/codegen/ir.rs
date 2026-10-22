@@ -30,6 +30,19 @@ pub enum Item {
     MacroFn(MacroFn),
 }
 
+impl Item {
+    /// The Rust type this item defines, if any (records, named enums and
+    /// typedefs).
+    pub fn type_name(&self) -> Option<&str> {
+        match self {
+            Item::Record(r) => Some(&r.name),
+            Item::Enum(e) => e.name.as_deref(),
+            Item::Typedef(t) => Some(&t.name),
+            _ => None,
+        }
+    }
+}
+
 /// A function-like macro whose body is a single call to a bound function,
 /// such as zlib's
 /// `#define deflateInit(strm, level) deflateInit_((strm), (level), ZLIB_VERSION, (int)sizeof(z_stream))`.
@@ -71,6 +84,9 @@ pub enum Abi {
     /// The platform's C calling convention.
     #[default]
     C,
+    /// The C calling convention, for functions that may unwind (C++
+    /// functions not declared `noexcept`).
+    CUnwind,
     /// `__stdcall` (32-bit Windows).
     Stdcall,
     /// `__fastcall` (32-bit Windows).
@@ -86,6 +102,7 @@ impl Abi {
     pub fn as_str(self) -> &'static str {
         match self {
             Abi::C => "C",
+            Abi::CUnwind => "C-unwind",
             Abi::Stdcall => "stdcall",
             Abi::Fastcall => "fastcall",
             Abi::Thiscall => "thiscall",
@@ -97,8 +114,10 @@ impl Abi {
 /// A function prototype.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
-    /// The symbol name.
+    /// The Rust name (the symbol name for C functions).
     pub name: String,
+    /// The symbol name when it differs from `name` (mangled C++ names).
+    pub link_name: Option<String>,
     /// The parameters, in order.
     pub params: Vec<Param>,
     /// The return type.
@@ -123,8 +142,10 @@ pub struct Param {
 /// A global variable exported by the library.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Var {
-    /// The symbol name.
+    /// The Rust name (the symbol name for C variables).
     pub name: String,
+    /// The symbol name when it differs from `name` (mangled C++ names).
+    pub link_name: Option<String>,
     /// The variable's type.
     pub ty: Type,
     /// Whether the variable is `const`.
@@ -180,6 +201,9 @@ pub struct Field {
     /// Size and alignment of the field's type in bytes, as computed by the
     /// C compiler (unused for bitfields).
     pub layout: (u64, u64),
+    /// Whether the field is a `private` or `protected` C++ member: it is
+    /// laid out but not `pub` (and gets no bitfield accessors).
+    pub is_private: bool,
     /// The documentation comment, if any.
     pub doc: Option<String>,
 }
@@ -313,6 +337,20 @@ pub enum Type {
     /// A type with no Rust equivalent (e.g. `long double`); items using it
     /// are skipped.
     Unsupported(String),
+}
+
+impl Function {
+    /// The name the library exports.
+    pub fn symbol(&self) -> &str {
+        self.link_name.as_deref().unwrap_or(&self.name)
+    }
+}
+
+impl Var {
+    /// The name the library exports.
+    pub fn symbol(&self) -> &str {
+        self.link_name.as_deref().unwrap_or(&self.name)
+    }
 }
 
 impl Type {

@@ -50,8 +50,9 @@ jobs:
         env:
           # The generator's end-to-end test must run, not skip, on 64-bit hosts.
           DLSYM_REQUIRE_E2E: ${{ !matrix.platform.target && '1' || '' }}
-          # On Windows, build the test library with LLVM's clang (MSVC ABI).
+          # On Windows, build the test libraries with LLVM's clang (MSVC ABI).
           CC: ${{ runner.os == 'Windows' && 'clang' || '' }}
+          CXX: ${{ runner.os == 'Windows' && 'clang++' || '' }}
         run: cargo test --locked --all-features ${{ matrix.platform.target && format('--target {0}', matrix.platform.target) || '' }}
 
   musl:
@@ -69,7 +70,7 @@ jobs:
             -e DLSYM_E2E_RUSTFLAGS="-C target-feature=-crt-static" \
             -e DLSYM_REQUIRE_E2E=1 \
             rust:alpine sh -c '
-              apk add --no-cache musl-dev gcc clang-dev &&
+              apk add --no-cache musl-dev gcc g++ clang-dev &&
               cargo test --locked --all-features
             '
 

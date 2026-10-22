@@ -325,7 +325,8 @@ impl<'h> Emitter<'h> {
                     self.doc(f.doc.as_deref(), "    ");
                     let _ = writeln!(
                         self.out,
-                        "    pub {}: {},",
+                        "    {}{}: {},",
+                        if f.is_private { "" } else { "pub " },
                         ident(&f.name),
                         rust_type(&f.ty)
                     );
@@ -400,7 +401,7 @@ impl<'h> Emitter<'h> {
         for slot in &layout.slots {
             let Slot::Bitfield(g) = slot else { continue };
             for f in &g.fields {
-                if f.name.starts_with("__anon") {
+                if f.name.starts_with("__anon") || f.is_private {
                     continue;
                 }
                 let width = f.bit_width.unwrap_or(0);
@@ -989,7 +990,7 @@ impl<'h> Emitter<'h> {
 
     fn function(&self, f: &Function, opts: &Options) -> Result<String, String> {
         if f.variadic {
-            if f.abi != Abi::C {
+            if !matches!(f.abi, Abi::C | Abi::CUnwind) {
                 return Err("variadic functions are only supported with the C ABI".into());
             }
             if f.params.is_empty() || f.params.len() > 6 {
@@ -1003,7 +1004,7 @@ impl<'h> Emitter<'h> {
         if opts.optional.iter().any(|p| glob(p, &f.name)) {
             out.push_str("            #[optional]\n");
         }
-        let fname = item_ident(&f.name, &mut out);
+        let fname = item_ident(&f.name, f.symbol(), &mut out);
         let safety = if !f.variadic && opts.safe.iter().any(|p| glob(p, &f.name)) {
             "safe "
         } else {
@@ -1044,7 +1045,7 @@ impl<'h> Emitter<'h> {
         if opts.optional.iter().any(|p| glob(p, &v.name)) {
             out.push_str("            #[optional]\n");
         }
-        let name = item_ident(&v.name, &mut out);
+        let name = item_ident(&v.name, v.symbol(), &mut out);
         let kind = match (v.is_const, opts.safe.iter().any(|p| glob(p, &v.name))) {
             (false, _) => "static mut",
             (true, true) => "safe static",
@@ -1055,12 +1056,12 @@ impl<'h> Emitter<'h> {
     }
 }
 
-/// Escapes a symbol name for use as a `library!` item, adding a
-/// `#[link_name]` when the Rust name differs from the symbol.
-fn item_ident(name: &str, out: &mut String) -> String {
+/// Escapes a Rust name for use as a `library!` item, adding a
+/// `#[link_name]` when it differs from the symbol.
+fn item_ident(name: &str, symbol: &str, out: &mut String) -> String {
     let id = ident(name);
-    if id != name && !id.starts_with("r#") {
-        let _ = writeln!(out, "            #[link_name = {name:?}]");
+    if symbol != id.strip_prefix("r#").unwrap_or(&id) {
+        let _ = writeln!(out, "            #[link_name = {symbol:?}]");
     }
     id
 }
@@ -1402,6 +1403,7 @@ mod tests {
             offset_bits: offset * 8,
             bit_width: None,
             layout,
+            is_private: false,
             doc: None,
         }
     }
@@ -1498,6 +1500,7 @@ mod tests {
                 }),
                 Item::Function(Function {
                     name: "type".into(),
+                    link_name: None,
                     params: vec![Param {
                         name: None,
                         ty: Type::Named("color".into()),
@@ -1509,6 +1512,7 @@ mod tests {
                 }),
                 Item::Var(Var {
                     name: "counter".into(),
+                    link_name: None,
                     ty: Type::Int,
                     is_const: false,
                     doc: None,

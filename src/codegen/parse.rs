@@ -8,6 +8,13 @@
 //! `#define` constants are emitted; types they reference from elsewhere
 //! (system headers, other libraries) are pulled in as needed: in full when
 //! used by value, as opaque types when only used behind pointers.
+//!
+//! C++ headers ([`Options::cpp`]) are supported for what has a C-like ABI:
+//! functions and variables in namespaces, public static member functions,
+//! and trivially copyable types. Names are qualified with `_` (`ns::f` ->
+//! `ns_f`), overloads get a suffix from their parameter types, and symbols
+//! are looked up by their mangled names as clang computes them for the
+//! target. Functions not declared `noexcept` use the `C-unwind` ABI.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -42,6 +49,9 @@ pub struct Options {
     /// clang as `--target`; add `--sysroot` etc. to
     /// [`clang_args`](Options::clang_args) as needed).
     pub target: Option<String>,
+    /// Parse the headers as C++ (`-x c++`). Enabled automatically when an
+    /// input header ends in `.hpp`, `.hh`, `.hxx` or `.h++`.
+    pub cpp: bool,
 }
 
 /// The result of [`parse`].
@@ -113,7 +123,13 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     if let Some(t) = &opts.target {
         user_args.insert(0, format!("--target={}", clang_triple(t)));
     }
-    let args = clang_args(&user_args);
+    let cpp = opts.cpp
+        || opts.headers.iter().any(|h| {
+            h.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e, "hpp" | "hh" | "hxx" | "h++" | "H"))
+        });
+    let args = clang_args(&user_args, cpp);
 
     let tu = Tu::parse(
         lib,
@@ -133,6 +149,9 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
         }
     }
     if !errors.is_empty() && !opts.keep_going {
+        if !cpp {
+            errors.push("note: if these are C++ headers, parse them as C++ (--cpp)".into());
+        }
         return Err(Error::Diagnostics(errors));
     }
     warnings.extend(errors);
@@ -145,6 +164,7 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     ctx.name_types(&top);
     let macros = ctx.roots(&top);
     ctx.finish_records();
+    ctx.name_overloads();
     let mut consts = evaluate_macros(lib, &args, &umbrella, &macros, &mut ctx);
     consts.extend(ctx.macro_fns(&consts));
     let header = ctx.take_header(consts);
@@ -157,8 +177,8 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
 }
 
 /// Builds the clang command line: the user's arguments plus defaults.
-fn clang_args(user: &[String]) -> Vec<String> {
-    let mut args = vec!["-xc".to_owned()];
+fn clang_args(user: &[String], cpp: bool) -> Vec<String> {
+    let mut args = vec![if cpp { "-xc++" } else { "-xc" }.to_owned()];
     if cfg!(target_vendor = "apple")
         && !user.iter().any(|a| a.starts_with("-isysroot"))
         && let Ok(out) = std::process::Command::new("xcrun")
@@ -264,7 +284,11 @@ struct Ctx<'tu, 'o> {
     typedefs: HashMap<String, bool>,
     types: Vec<(SortKey, Item)>,
     funcs: Vec<(SortKey, Item)>,
+    /// Symbols of the functions and variables added so far.
     func_names: HashSet<String>,
+    /// Whether each C++ record (by USR) can be passed by value like a C
+    /// struct.
+    trivial: HashMap<String, bool>,
     fn_macros: Vec<Cursor<'tu>>,
     value_names: HashSet<String>,
     warnings: Vec<String>,
@@ -299,6 +323,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             types: Vec::new(),
             funcs: Vec::new(),
             func_names: HashSet::new(),
+            trivial: HashMap::new(),
             fn_macros: Vec::new(),
             value_names: HashSet::new(),
             warnings: Vec::new(),
@@ -310,16 +335,20 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         self.warnings.push(msg);
     }
 
-    /// Top-level cursors, looking through `extern "C"` blocks.
+    /// Top-level cursors, looking through `extern "C"` blocks and
+    /// namespaces.
     fn top_level(&self) -> Vec<Cursor<'tu>> {
-        let mut out = Vec::new();
-        for c in self.tu.cursor().children() {
-            if c.kind() == clang::LINKAGE_SPEC {
-                out.extend(c.children());
-            } else {
-                out.push(c);
+        fn walk<'tu>(c: Cursor<'tu>, out: &mut Vec<Cursor<'tu>>) {
+            for c in c.children() {
+                if matches!(c.kind(), clang::LINKAGE_SPEC | clang::NAMESPACE) {
+                    walk(c, out);
+                } else {
+                    out.push(c);
+                }
             }
         }
+        let mut out = Vec::new();
+        walk(self.tu.cursor(), &mut out);
         out
     }
 
@@ -412,10 +441,10 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
     /// records which tag each typedef aliases (to detect name clashes).
     fn name_types(&mut self, top: &[Cursor<'tu>]) {
         for c in top {
-            if c.kind() != clang::TYPEDEF_DECL {
+            if !matches!(c.kind(), clang::TYPEDEF_DECL | clang::TYPE_ALIAS_DECL) {
                 continue;
             }
-            let name = c.spelling();
+            let name = scoped_name(*c);
             let target = desugar(c.typedef_underlying());
             let usr = matches!(target.kind(), clang::TYPE_RECORD | clang::TYPE_ENUM)
                 .then(|| target.declaration().canonical().usr());
@@ -439,7 +468,13 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         let name = if decl.is_anonymous() {
             hint?.to_owned()
         } else {
-            let name = decl.spelling();
+            let mut name = scoped_name(decl);
+            // Template specializations share their template's name:
+            // `std::vector<int>` -> `std_vector_int`.
+            let spelled = decl.cursor_type().spelling();
+            if spelled.contains('<') {
+                name = sanitize_name(&spelled);
+            }
             // `typedef int foo; struct foo {..};` would clash in Rust.
             match self.typedef_targets.get(&name) {
                 Some(target) if target.as_deref() != Some(usr.as_str()) => {
@@ -465,15 +500,21 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             if kind == clang::INCLUSION_DIRECTIVE || !self.is_selected(c) {
                 continue;
             }
-            let name = c.spelling();
+            let name = qualified_name(c);
             match kind {
                 clang::FUNCTION_DECL if self.name_allowed(&name) => self.add_function(c),
                 clang::VAR_DECL if self.name_allowed(&name) => self.add_var(c),
-                clang::STRUCT_DECL | clang::UNION_DECL
+                clang::STRUCT_DECL | clang::UNION_DECL | clang::CLASS_DECL
                     if !c.is_anonymous() && self.name_allowed(&name) =>
                 {
-                    let full = c.definition().is_some();
+                    // Non-trivial C++ classes are only usable behind
+                    // pointers: a bitwise copy would skip their copy
+                    // constructor and destructor.
+                    let full = c.definition().is_some() && self.is_trivial(c);
                     self.require_record(c, full);
+                    if c.is_definition() {
+                        self.add_static_members(c);
+                    }
                 }
                 clang::ENUM_DECL
                     if (c.is_anonymous() || self.name_allowed(&name))
@@ -481,7 +522,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 {
                     self.require_enum(c);
                 }
-                clang::TYPEDEF_DECL
+                clang::TYPEDEF_DECL | clang::TYPE_ALIAS_DECL
                     if self.name_allowed(&name)
                         && !is_function_type(desugar(c.typedef_underlying())) =>
                 {
@@ -504,12 +545,54 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         macros
     }
 
+    /// Adds the public static member functions and variables of a C++
+    /// class definition.
+    fn add_static_members(&mut self, class: Cursor<'tu>) {
+        for m in class.children() {
+            if !m.is_public() || !self.name_allowed(&qualified_name(m)) {
+                continue;
+            }
+            match m.kind() {
+                clang::CXX_METHOD if m.is_static_method() => self.add_function(m),
+                clang::VAR_DECL => self.add_var(m),
+                _ => {}
+            }
+        }
+    }
+
+    /// The Rust name and, for C++ declarations, the mangled symbol of a
+    /// function or variable. `None` (with a warning) if libclang cannot
+    /// mangle it.
+    fn symbol_names(&mut self, c: Cursor<'tu>) -> Option<(String, Option<String>)> {
+        let spelling = c.spelling();
+        let rust = scoped_name(c);
+        match c.mangling().as_deref().and_then(cpp_symbol) {
+            Some(symbol) => Some((rust, Some(symbol.to_owned()))),
+            None if rust != spelling => {
+                self.warn(format!(
+                    "skipped `{}`: this libclang cannot mangle C++ names",
+                    qualified_name(c)
+                ));
+                None
+            }
+            None => Some((rust, None)),
+        }
+    }
+
     fn add_function(&mut self, c: Cursor<'tu>) {
-        let name = c.spelling();
-        if c.linkage() != clang::LINKAGE_EXTERNAL
-            || c.is_definition()
-            || self.func_names.contains(&name)
-        {
+        if c.linkage() != clang::LINKAGE_EXTERNAL || c.is_definition() || c.is_deleted() {
+            return;
+        }
+        let Some((name, link_name)) = self.symbol_names(c) else {
+            return;
+        };
+        // C++ inline functions are only exported if the library happens to
+        // use them out of line.
+        if link_name.is_some() && c.is_inline() {
+            return;
+        }
+        let symbol = link_name.clone().unwrap_or_else(|| name.clone());
+        if self.func_names.contains(&symbol) {
             return;
         }
         let ty = c.cursor_type();
@@ -522,13 +605,28 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             })
             .collect();
         let ret = self.convert(c.result_type(), true);
+        let mut abi = abi(ty.calling_convention());
+        // A C++ exception unwinding through a `"C"` function aborts the
+        // process; `"C-unwind"` lets it propagate as a panic would.
+        if link_name.is_some() && abi == Abi::C && c.is_noexcept() != Some(true) {
+            abi = Abi::CUnwind;
+        }
+        let mut doc = c.comment();
+        if link_name.is_some() {
+            let sig = format!("C++: `{}`", qualified_name(c));
+            doc = Some(match doc {
+                Some(d) => format!("{d}\n\n{sig}"),
+                None => sig,
+            });
+        }
         let f = Function {
             name: name.clone(),
+            link_name,
             params,
             ret,
             variadic: ty.kind() == clang::TYPE_FUNCTION_PROTO && ty.is_variadic(),
-            abi: abi(ty.calling_convention()),
-            doc: c.comment(),
+            abi,
+            doc,
         };
         let bad = f
             .params
@@ -543,17 +641,27 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             ));
             return;
         }
-        self.func_names.insert(name);
+        self.func_names.insert(symbol);
         let key = self.key(c);
         self.funcs.push((key, Item::Function(f)));
     }
 
     fn add_var(&mut self, c: Cursor<'tu>) {
-        let name = c.spelling();
+        let is_member = matches!(
+            c.semantic_parent().kind(),
+            clang::STRUCT_DECL | clang::CLASS_DECL | clang::UNION_DECL
+        );
         if c.linkage() != clang::LINKAGE_EXTERNAL
-            || c.storage_class() == clang::STORAGE_STATIC
-            || self.func_names.contains(&name)
+            || (c.storage_class() == clang::STORAGE_STATIC && !is_member)
+            || c.is_definition() && is_member
         {
+            return;
+        }
+        let Some((name, link_name)) = self.symbol_names(c) else {
+            return;
+        };
+        let symbol = link_name.clone().unwrap_or_else(|| name.clone());
+        if self.func_names.contains(&symbol) {
             return;
         }
         let t = c.cursor_type();
@@ -571,13 +679,14 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             ));
             return;
         }
-        self.func_names.insert(name.clone());
+        self.func_names.insert(symbol);
         let key = self.key(c);
         let doc = c.comment();
         self.funcs.push((
             key,
             Item::Var(Var {
                 name,
+                link_name,
                 ty,
                 is_const,
                 doc,
@@ -608,7 +717,20 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 None => self.convert(t.canonical(), by_value),
             },
             clang::TYPE_TYPEDEF => self.convert_typedef(t, by_value),
-            clang::TYPE_RECORD => self.require_record(t.declaration(), by_value),
+            clang::TYPE_RECORD => {
+                if by_value && !self.is_trivial(t.declaration()) {
+                    return Type::Unsupported(format!("non-trivial C++ type `{}`", t.spelling()));
+                }
+                self.require_record(t.declaration(), by_value)
+            }
+            clang::TYPE_LVALUE_REFERENCE | clang::TYPE_RVALUE_REFERENCE => {
+                // References are passed as pointers.
+                let pointee = t.pointee();
+                Type::Pointer {
+                    pointee: Box::new(self.convert(pointee, false)),
+                    is_const: pointee.is_const(),
+                }
+            }
             clang::TYPE_ENUM => self.require_enum(t.declaration()),
             clang::TYPE_POINTER => {
                 let pointee = t.pointee();
@@ -637,6 +759,90 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 }
             }
             kind => builtin(kind, t),
+        }
+    }
+
+    /// Whether a record can be passed by value like a C struct: a POD, or
+    /// a class with no base classes, virtual functions, user-declared
+    /// destructor or copy/move constructor, recursively through its fields.
+    /// Other types are passed by hidden reference in C++ ABIs.
+    /// Conservative: an explicitly defaulted destructor counts as
+    /// non-trivial, and so does any non-POD template specialization (whose
+    /// implicitly instantiated members libclang does not list).
+    fn is_trivial(&mut self, decl: Cursor<'tu>) -> bool {
+        let Some(def) = decl.definition() else {
+            return true;
+        };
+        let ty = def.cursor_type();
+        if ty.is_pod() {
+            return true;
+        }
+        if ty.spelling().contains('<') {
+            return false;
+        }
+        let usr = def.usr();
+        if let Some(&t) = self.trivial.get(&usr) {
+            return t;
+        }
+        self.trivial.insert(usr.clone(), true);
+        let trivial = def.children().into_iter().all(|c| match c.kind() {
+            clang::CXX_BASE_SPECIFIER | clang::DESTRUCTOR => false,
+            clang::CONSTRUCTOR => !c.is_copy_or_move_constructor(),
+            clang::CXX_METHOD => !c.is_virtual_method(),
+            clang::FIELD_DECL => {
+                let mut t = desugar(c.cursor_type());
+                while matches!(
+                    t.kind(),
+                    clang::TYPE_CONSTANT_ARRAY | clang::TYPE_INCOMPLETE_ARRAY
+                ) {
+                    t = desugar(t.element());
+                }
+                t.kind() != clang::TYPE_RECORD || self.is_trivial(t.declaration())
+            }
+            _ => true,
+        });
+        self.trivial.insert(usr, trivial);
+        trivial
+    }
+
+    /// Gives overloaded C++ functions distinct Rust names, suffixed with
+    /// their parameter types (`scale_int`, `scale_double`).
+    fn name_overloads(&mut self) {
+        let mut count: HashMap<String, usize> = HashMap::new();
+        for (_, item) in &self.funcs {
+            if let Item::Function(f) = item {
+                *count.entry(f.name.clone()).or_default() += 1;
+            }
+        }
+        let mut taken: HashSet<String> = self
+            .funcs
+            .iter()
+            .filter_map(|(_, i)| match i {
+                Item::Function(f) if count[&f.name] == 1 => Some(f.name.clone()),
+                Item::Var(v) => Some(v.name.clone()),
+                _ => None,
+            })
+            .collect();
+        for (_, item) in &mut self.funcs {
+            let Item::Function(f) = item else { continue };
+            if count[&f.name] == 1 {
+                continue;
+            }
+            let mut name = f.name.clone();
+            if f.params.is_empty() {
+                name.push_str("_void");
+            }
+            for p in &f.params {
+                name.push('_');
+                name.push_str(&type_suffix(&p.ty));
+            }
+            let mut unique = name.clone();
+            let mut n = 2;
+            while !taken.insert(unique.clone()) {
+                unique = format!("{name}_{n}");
+                n += 1;
+            }
+            f.name = unique;
         }
     }
 
@@ -674,17 +880,20 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
     }
 
     fn require_typedef(&mut self, decl: Cursor<'tu>, by_value: bool) -> Type {
-        let name = decl.spelling();
-        if let Some(prim) = well_known(&name) {
+        if let Some(prim) = well_known(&decl.spelling()) {
             return prim;
         }
+        let name = scoped_name(decl);
         match self.typedefs.get(&name) {
             Some(&full) if full || !by_value => return Type::Named(name),
             Some(_) => {
                 // A pointer-only use became a by-value one: the target must
                 // now be complete.
+                let ty = self.convert(decl.typedef_underlying(), true);
+                if let Some(what) = ty.unsupported() {
+                    return Type::Unsupported(what.to_owned());
+                }
                 self.typedefs.insert(name.clone(), true);
-                self.convert(decl.typedef_underlying(), true);
                 return Type::Named(name);
             }
             None => {}
@@ -699,6 +908,8 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 self.warn(format!(
                     "skipped typedef `{name}`: unsupported type `{what}`"
                 ));
+                // Not emitted: later uses must not refer to it by name.
+                self.typedefs.remove(&name);
                 return Type::Unsupported(what);
             }
             let key = self.key(decl);
@@ -774,12 +985,18 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 | Type::ULongLong
                 | Type::Fixed(_, false)
         );
+        // `enum class` constants are scoped by their enum, others by the
+        // enclosing namespace or class.
+        let prefix = match &name {
+            Some(n) if decl.is_scoped_enum() => format!("{n}_"),
+            _ => scope_prefix(decl),
+        };
         let variants: Vec<Variant> = decl
             .children()
             .into_iter()
             .filter(|v| v.kind() == clang::ENUM_CONSTANT_DECL)
             .map(|v| Variant {
-                name: v.spelling(),
+                name: format!("{prefix}{}", v.spelling()),
                 value: v.enum_value(unsigned),
                 doc: v.comment(),
             })
@@ -849,6 +1066,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                         offset_bits: c.field_offset_bits().unwrap_or(0),
                         bit_width: c.bit_width(),
                         layout: (fty.size().unwrap_or(0), fty.align().unwrap_or(1)),
+                        is_private: !c.is_public(),
                         doc: c.comment(),
                     });
                 }
@@ -867,6 +1085,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                         offset_bits: offset,
                         bit_width: None,
                         layout: (rty.size().unwrap_or(0), rty.align().unwrap_or(1)),
+                        is_private: !c.is_public(),
                         doc: None,
                     });
                 }
@@ -964,6 +1183,112 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 .chain(funcs.into_iter().map(|(_, i)| i))
                 .collect(),
         }
+    }
+}
+
+/// The names of the namespaces and classes enclosing `c`, outermost first
+/// (anonymous ones left out).
+fn scopes(c: Cursor<'_>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut p = c.semantic_parent();
+    while !p.is_null()
+        && matches!(
+            p.kind(),
+            clang::NAMESPACE | clang::STRUCT_DECL | clang::CLASS_DECL | clang::UNION_DECL
+        )
+    {
+        if p.kind() != clang::NAMESPACE {
+            // A template specialization's spelling includes its arguments
+            // and enclosing scopes: `ns::info<float>` -> `ns_info_float`.
+            let spelled = p.cursor_type().spelling();
+            if spelled.contains('<') {
+                out.push(sanitize_name(&spelled));
+                break;
+            }
+        }
+        if !p.is_anonymous() {
+            out.push(p.spelling());
+        }
+        p = p.semantic_parent();
+    }
+    out.reverse();
+    out
+}
+
+/// `ns_Class_` for a declaration in `ns::Class`, empty at file scope.
+fn scope_prefix(c: Cursor<'_>) -> String {
+    scopes(c).iter().map(|s| format!("{s}_")).collect()
+}
+
+/// The Rust name of a declaration: its name qualified with `_` (`ns_f` for
+/// `ns::f`, just `f` in C).
+fn scoped_name(c: Cursor<'_>) -> String {
+    scope_prefix(c) + &c.spelling()
+}
+
+/// The C++ name of a declaration (`ns::Class::f`), as matched by
+/// [`Options::allow`] and [`Options::block`].
+fn qualified_name(c: Cursor<'_>) -> String {
+    let mut parts = scopes(c);
+    parts.push(c.spelling());
+    parts.join("::")
+}
+
+/// The symbol to look up for clang's mangling of a declaration, if it is a
+/// mangled C++ name rather than a C one. Apple's assemblers prefix every
+/// symbol with `_`, which `dlsym` does not want; 32-bit Windows decorates C
+/// names (`_f`, `_f@8`), which only matter to the linker.
+fn cpp_symbol(mangled: &str) -> Option<&str> {
+    if mangled.starts_with("__Z") {
+        Some(&mangled[1..])
+    } else if mangled.starts_with("_Z") || mangled.starts_with('?') {
+        Some(mangled)
+    } else {
+        None
+    }
+}
+
+/// Turns a C++ type spelling into an identifier: `std::vector<int *>` ->
+/// `std_vector_int_ptr`.
+fn sanitize_name(spelled: &str) -> String {
+    let spelled = spelled.replace('*', " ptr ").replace('&', " ref ");
+    let words: Vec<&str> = spelled
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.join("_")
+}
+
+/// A short name for `t` in an overload suffix.
+fn type_suffix(t: &Type) -> String {
+    match t {
+        Type::Void => "void".into(),
+        Type::Bool => "bool".into(),
+        Type::Char => "char".into(),
+        Type::SChar => "schar".into(),
+        Type::UChar => "uchar".into(),
+        Type::Short => "short".into(),
+        Type::UShort => "ushort".into(),
+        Type::Int => "int".into(),
+        Type::UInt => "uint".into(),
+        Type::Long => "long".into(),
+        Type::ULong => "ulong".into(),
+        Type::LongLong => "longlong".into(),
+        Type::ULongLong => "ulonglong".into(),
+        Type::Float => "float".into(),
+        Type::Double => "double".into(),
+        Type::Fixed(bits, true) => format!("i{bits}"),
+        Type::Fixed(bits, false) => format!("u{bits}"),
+        Type::USize => "usize".into(),
+        Type::ISize => "isize".into(),
+        Type::Pointer { pointee, is_const } => {
+            let c = if *is_const { "const_" } else { "" };
+            format!("{c}{}_ptr", type_suffix(pointee))
+        }
+        Type::Array { elem, .. } => format!("{}_array", type_suffix(elem)),
+        Type::FnPtr { .. } => "fn".into(),
+        Type::Named(n) => n.clone(),
+        Type::Unsupported(_) => "unsupported".into(),
     }
 }
 
@@ -1418,6 +1743,25 @@ mod tests {
         assert_eq!(parse_c_int("0x10UL"), Some(16));
         assert_eq!(parse_c_int("017"), Some(15));
         assert_eq!(parse_c_int("0"), Some(0));
+    }
+
+    #[test]
+    fn cpp_names() {
+        assert_eq!(cpp_symbol("_ZN3geo3addEii"), Some("_ZN3geo3addEii"));
+        assert_eq!(cpp_symbol("__ZN3geo3addEii"), Some("_ZN3geo3addEii"));
+        assert_eq!(cpp_symbol("?add@geo@@YAHHH@Z"), Some("?add@geo@@YAHHH@Z"));
+        assert_eq!(cpp_symbol("_add"), None);
+        assert_eq!(cpp_symbol("_add@8"), None);
+        assert_eq!(cpp_symbol("add"), None);
+        assert_eq!(
+            sanitize_name("std::vector<const char *, std::allocator<int> >"),
+            "std_vector_const_char_ptr_std_allocator_int"
+        );
+        assert_eq!(
+            type_suffix(&Type::const_ptr(Type::Named("geo_point".into()))),
+            "const_geo_point_ptr"
+        );
+        assert_eq!(type_suffix(&Type::Fixed(64, false)), "u64");
     }
 
     #[test]

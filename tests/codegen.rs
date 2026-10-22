@@ -1,8 +1,9 @@
-//! End-to-end test of the generator: compiles `tests/fixtures/demo` into a
-//! shared library with the system C compiler, generates bindings for
-//! `demo.h`, then builds and runs `tests/fixtures/demo/main.rs` against it.
+//! End-to-end tests of the generator: compile `tests/fixtures/demo` (C) and
+//! `tests/fixtures/cpp` (C++) into shared libraries with the system
+//! compiler, generate bindings for their headers, then build and run each
+//! fixture's `main.rs` against them.
 //!
-//! Skipped (with a message) when libclang or a C compiler is unavailable,
+//! Skipped (with a message) when libclang or a compiler is unavailable,
 //! unless `DLSYM_REQUIRE_E2E` is set, as in CI.
 
 #![cfg(feature = "codegen")]
@@ -19,10 +20,10 @@ fn skip(why: &str) {
     eprintln!("skipping end-to-end test: {why}");
 }
 
-fn compiler() -> Option<String> {
-    let candidates = std::env::var("CC")
+fn compiler(env: &str, names: [&str; 3]) -> Option<String> {
+    let candidates = std::env::var(env)
         .into_iter()
-        .chain(["cc", "clang", "gcc"].map(String::from));
+        .chain(names.map(String::from));
     candidates.into_iter().find(|cc| {
         Command::new(cc)
             .arg("--version")
@@ -35,23 +36,9 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/demo")
 }
 
-#[test]
-fn demo_library() {
-    if cfg!(target_pointer_width = "32") {
-        // libclang and the C compiler target the 64-bit host.
-        eprintln!("skipping end-to-end test on a 32-bit target");
-        return;
-    }
-    let Some(cc) = compiler() else {
-        return skip("no C compiler found");
-    };
-    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-demo");
-    let _ = std::fs::remove_dir_all(&work);
-    std::fs::create_dir_all(work.join("src")).unwrap();
-
-    // Build the C library.
-    let lib = work.join(dlsym::library_filename("demo"));
-    let mut cmd = Command::new(&cc);
+/// Compiles `source` into the shared library `lib`.
+fn compile(cc: &str, source: &Path, lib: &Path) {
+    let mut cmd = Command::new(cc);
     if cfg!(target_vendor = "apple") {
         cmd.arg("-dynamiclib");
     } else {
@@ -62,11 +49,69 @@ fn demo_library() {
     }
     let status = cmd
         .arg("-o")
-        .arg(&lib)
-        .arg(fixtures().join("demo.c"))
+        .arg(lib)
+        .arg(source)
         .status()
-        .expect("run C compiler");
-    assert!(status.success(), "C compiler failed");
+        .expect("run the compiler");
+    assert!(status.success(), "{cc} failed on {}", source.display());
+}
+
+/// Builds a crate from the generated `code` and `main`, and runs it with
+/// `lib` as its argument; it must print `{name} ok`.
+fn run(name: &str, work: &Path, code: &str, main: &Path, lib: &Path) {
+    std::fs::create_dir_all(work.join("src")).unwrap();
+    std::fs::write(work.join("src/bindings.rs"), code).unwrap();
+    std::fs::copy(main, work.join("src/main.rs")).unwrap();
+    std::fs::write(
+        work.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"{name}-e2e\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
+             [dependencies]\ndlsym = {{ path = {:?} }}\n\n[workspace]\n",
+            env!("CARGO_MANIFEST_DIR")
+        ),
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO"))
+        .args(["run", "--quiet", "--manifest-path"])
+        .arg(work.join("Cargo.toml"))
+        .arg("--")
+        .arg(lib)
+        .env(
+            "CARGO_TARGET_DIR",
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-target"),
+        )
+        // Don't inherit `-D warnings` and the like, but let CI pass flags
+        // the nested build needs (musl: `-C target-feature=-crt-static`).
+        .env(
+            "RUSTFLAGS",
+            std::env::var("DLSYM_E2E_RUSTFLAGS").unwrap_or_default(),
+        )
+        .output()
+        .expect("run cargo");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains(&format!("{name} ok")),
+        "generated bindings failed:\n--- stdout\n{stdout}\n--- stderr\n{stderr}\n--- bindings\n{code}"
+    );
+}
+
+#[test]
+fn demo_library() {
+    if cfg!(target_pointer_width = "32") {
+        // libclang and the C compiler target the 64-bit host.
+        eprintln!("skipping end-to-end test on a 32-bit target");
+        return;
+    }
+    let Some(cc) = compiler("CC", ["cc", "clang", "gcc"]) else {
+        return skip("no C compiler found");
+    };
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-demo");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let lib = work.join(dlsym::library_filename("demo"));
+    compile(&cc, &fixtures().join("demo.c"), &lib);
 
     let generated = match Builder::new()
         .header(fixtures().join("demo.h"))
@@ -130,39 +175,72 @@ fn demo_library() {
         "static inline functions have no symbol"
     );
     assert!(!code.contains("DEMO_EMPTY") && !code.contains("DEMO_FUNC_LIKE"));
-    std::fs::write(work.join("src/bindings.rs"), &code).unwrap();
-    std::fs::copy(fixtures().join("main.rs"), work.join("src/main.rs")).unwrap();
-    std::fs::write(
-        work.join("Cargo.toml"),
-        format!(
-            "[package]\nname = \"demo-e2e\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n\
-             [dependencies]\ndlsym = {{ path = {:?} }}\n\n[workspace]\n",
-            env!("CARGO_MANIFEST_DIR")
-        ),
-    )
-    .unwrap();
+    run("demo", &work, &code, &fixtures().join("main.rs"), &lib);
+}
 
-    let out = Command::new(env!("CARGO"))
-        .args(["run", "--quiet", "--manifest-path"])
-        .arg(work.join("Cargo.toml"))
-        .arg("--")
-        .arg(&lib)
-        .env(
-            "CARGO_TARGET_DIR",
-            Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-target"),
-        )
-        // Don't inherit `-D warnings` and the like, but let CI pass flags
-        // the nested build needs (musl: `-C target-feature=-crt-static`).
-        .env(
-            "RUSTFLAGS",
-            std::env::var("DLSYM_E2E_RUSTFLAGS").unwrap_or_default(),
-        )
-        .output()
-        .expect("run cargo");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
+#[test]
+fn cpp_library() {
+    if cfg!(target_pointer_width = "32") {
+        eprintln!("skipping end-to-end test on a 32-bit target");
+        return;
+    }
+    let Some(cxx) = compiler("CXX", ["c++", "clang++", "g++"]) else {
+        return skip("no C++ compiler found");
+    };
+    let fixtures = fixtures().with_file_name("cpp");
+    let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-cpp");
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let lib = work.join(dlsym::library_filename("cpp"));
+    compile(&cxx, &fixtures.join("cpp.cpp"), &lib);
+
+    let generated = match Builder::new()
+        .header(fixtures.join("cpp.hpp"))
+        .struct_name("Cpp")
+        .library_name(lib.to_str().unwrap())
+        .generate()
+    {
+        Ok(g) => g,
+        Err(parse::Error::LibClang(e)) => return skip(&e),
+        Err(e) => panic!("{e}"),
+    };
+    let code = generated.code;
+    let warnings = generated.warnings.join("\n");
     assert!(
-        out.status.success() && stdout.contains("demo ok"),
-        "generated bindings failed:\n--- stdout\n{stdout}\n--- stderr\n{stderr}\n--- bindings\n{code}"
+        warnings.contains("non-trivial C++ type"),
+        "make_name returns a non-trivial type by value:\n{warnings}"
     );
+    assert!(
+        !warnings.contains("not exported"),
+        "every mangled name resolves:\n{warnings}"
+    );
+    for needle in [
+        "unsafe extern \"C-unwind\"",
+        "pub fn geo_checked_div(",
+        "pub fn geo_name_len(n: *const geo_Name)",
+        "pub fn cpp_plain(",
+        "pub const geo_shape_square: geo_shape",
+        // Private members are laid out but not `pub`.
+        "pub struct geo_Registry {\n    v: ::core::ffi::c_int,",
+        // Non-trivial classes are opaque.
+        "pub struct geo_Name {\n    _private: [u8; 0],",
+    ] {
+        assert!(code.contains(needle), "missing {needle:?} in\n{code}");
+    }
+    for absent in [
+        "secret",
+        "fn geo_Registry_value",
+        "make_name",
+        "fn geo_Registry_Registry",
+    ] {
+        assert!(
+            !code.contains(absent),
+            "{absent:?} must not be bound:\n{code}"
+        );
+    }
+    assert!(
+        !code.contains("#[link_name = \"cpp_plain\"]"),
+        "extern \"C\" functions keep their plain names"
+    );
+    run("cpp", &work, &code, &fixtures.join("main.rs"), &lib);
 }

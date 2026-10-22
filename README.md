@@ -154,6 +154,14 @@ What it handles:
 Long option lists can live in a file, passed as `@zlib.args` (whitespace-
 separated arguments, `"quotes"`, `#` comments).
 
+C++ headers (`--cpp`, automatic for `.hpp`/`.hh`/`.hxx`) work for the parts
+with a C-like ABI: functions and variables in namespaces and public static
+members are bound through the mangled names clang computes for the target
+(`geo::add(int, int)` becomes `geo_add_int_int` when overloaded), references
+become pointers, functions not declared `noexcept` use `extern "C-unwind"`,
+and classes that are not trivially copyable stay opaque. Member functions
+are not bound yet.
+
 From a `build.rs`, use `dlsym::codegen::Builder` (see the
 [`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).
 

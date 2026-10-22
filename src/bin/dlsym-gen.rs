@@ -53,6 +53,11 @@ Selection (declarations from the headers and the files they #include \"...\"):
 Clang:
       --target <triple>     generate for this Rust target instead of the host
                             (add --sysroot etc. after `--` as needed)
+      --cpp                 parse the headers as C++ (automatic for .hpp, .hh,
+                            .hxx): namespaced functions and variables, public
+                            static members and trivially copyable types are
+                            bound through their mangled names; overloads get
+                            a parameter-type suffix (f_int, f_double)
       --libclang <path>     libclang to use (default: $LIBCLANG_PATH,
                             llvm-config, then well-known locations)
       --keep-going          generate even if clang reports errors
@@ -107,6 +112,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "--libclang" => a.parse.libclang = Some(value(&arg)?.into()),
             "--target" => a.parse.target = Some(value(&arg)?),
             "--keep-going" => a.parse.keep_going = true,
+            "--cpp" => a.parse.cpp = true,
             "-q" | "--quiet" => a.quiet = true,
             "--" => a.parse.clang_args.extend(it.by_ref()),
             s if s.starts_with('-') => return Err(format!("unknown option {s}")),
@@ -244,10 +250,19 @@ fn run(args: &Args) -> Result<(), String> {
             eprintln!("warning: {w}");
         }
     }
-    let struct_name = args
-        .struct_name
-        .clone()
-        .unwrap_or_else(|| struct_name_for(&args.headers[0]));
+    let struct_name = args.struct_name.clone().unwrap_or_else(|| {
+        // Avoid clashing with a type of the same name (`class Hunspell`).
+        let mut name = struct_name_for(&args.headers[0]);
+        while parsed
+            .header
+            .items
+            .iter()
+            .any(|i| i.type_name() == Some(name.as_str()))
+        {
+            name.push_str("Lib");
+        }
+        name
+    });
     let headers: Vec<String> = args
         .headers
         .iter()

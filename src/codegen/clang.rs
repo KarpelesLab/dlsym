@@ -112,6 +112,22 @@ crate::library! {
             fn clang_getCursorType(cursor: CXCursor) -> CXType;
             fn clang_getCursorResultType(cursor: CXCursor) -> CXType;
             fn clang_getCursorLinkage(cursor: CXCursor) -> c_int;
+            fn clang_getCursorSemanticParent(cursor: CXCursor) -> CXCursor;
+            fn clang_getCXXAccessSpecifier(cursor: CXCursor) -> c_int;
+            fn clang_CXXMethod_isStatic(cursor: CXCursor) -> c_uint;
+            fn clang_CXXMethod_isVirtual(cursor: CXCursor) -> c_uint;
+            fn clang_CXXConstructor_isCopyConstructor(cursor: CXCursor) -> c_uint;
+            fn clang_CXXConstructor_isMoveConstructor(cursor: CXCursor) -> c_uint;
+            #[optional]
+            fn clang_Cursor_getMangling(cursor: CXCursor) -> CXString;
+            #[optional]
+            fn clang_getCursorExceptionSpecificationType(cursor: CXCursor) -> c_int;
+            #[optional]
+            fn clang_CXXMethod_isDeleted(cursor: CXCursor) -> c_uint;
+            #[optional]
+            fn clang_Cursor_isFunctionInlined(cursor: CXCursor) -> c_uint;
+            #[optional]
+            fn clang_EnumDecl_isScoped(cursor: CXCursor) -> c_uint;
             fn clang_getCursorDefinition(cursor: CXCursor) -> CXCursor;
             fn clang_getCanonicalCursor(cursor: CXCursor) -> CXCursor;
             fn clang_getCursorLocation(cursor: CXCursor) -> CXSourceLocation;
@@ -145,6 +161,7 @@ crate::library! {
             fn clang_EvalResult_dispose(result: CXEvalResult);
 
             fn clang_getCanonicalType(ty: CXType) -> CXType;
+            fn clang_isPODType(ty: CXType) -> c_uint;
             fn clang_getPointeeType(ty: CXType) -> CXType;
             fn clang_isConstQualifiedType(ty: CXType) -> c_uint;
             fn clang_getTypeDeclaration(ty: CXType) -> CXCursor;
@@ -187,13 +204,20 @@ crate::library! {
 // Cursor kinds.
 pub(crate) const STRUCT_DECL: c_int = 2;
 pub(crate) const UNION_DECL: c_int = 3;
+pub(crate) const CLASS_DECL: c_int = 4;
 pub(crate) const ENUM_DECL: c_int = 5;
 pub(crate) const FIELD_DECL: c_int = 6;
 pub(crate) const ENUM_CONSTANT_DECL: c_int = 7;
 pub(crate) const FUNCTION_DECL: c_int = 8;
 pub(crate) const VAR_DECL: c_int = 9;
 pub(crate) const TYPEDEF_DECL: c_int = 20;
+pub(crate) const CXX_METHOD: c_int = 21;
+pub(crate) const NAMESPACE: c_int = 22;
 pub(crate) const LINKAGE_SPEC: c_int = 23;
+pub(crate) const CONSTRUCTOR: c_int = 24;
+pub(crate) const DESTRUCTOR: c_int = 25;
+pub(crate) const TYPE_ALIAS_DECL: c_int = 36;
+pub(crate) const CXX_BASE_SPECIFIER: c_int = 44;
 pub(crate) const MACRO_DEFINITION: c_int = 501;
 pub(crate) const INCLUSION_DIRECTIVE: c_int = 503;
 
@@ -223,6 +247,8 @@ pub(crate) const TYPE_FLOAT: c_int = 21;
 pub(crate) const TYPE_DOUBLE: c_int = 22;
 pub(crate) const TYPE_NULLPTR: c_int = 24;
 pub(crate) const TYPE_POINTER: c_int = 101;
+pub(crate) const TYPE_LVALUE_REFERENCE: c_int = 103;
+pub(crate) const TYPE_RVALUE_REFERENCE: c_int = 104;
 pub(crate) const TYPE_RECORD: c_int = 105;
 pub(crate) const TYPE_ENUM: c_int = 106;
 pub(crate) const TYPE_TYPEDEF: c_int = 107;
@@ -241,6 +267,7 @@ pub(crate) const CALLCONV_X86_VECTORCALL: c_int = 12;
 
 // Misc enums.
 pub(crate) const LINKAGE_EXTERNAL: c_int = 4;
+pub(crate) const ACCESS_PUBLIC: c_int = 1;
 pub(crate) const STORAGE_STATIC: c_int = 3;
 pub(crate) const EVAL_INT: c_int = 1;
 pub(crate) const EVAL_FLOAT: c_int = 2;
@@ -731,6 +758,75 @@ impl<'tu> Cursor<'tu> {
         unsafe { self.lib.clang_getCursorLinkage(self.raw) }
     }
 
+    /// The declaration's semantic parent (namespace, class, or TU).
+    pub(crate) fn semantic_parent(self) -> Cursor<'tu> {
+        // SAFETY: see `kind`.
+        self.wrap(unsafe { self.lib.clang_getCursorSemanticParent(self.raw) })
+    }
+
+    /// Whether a C++ member is `public` (or not a member at all).
+    pub(crate) fn is_public(self) -> bool {
+        // SAFETY: see `kind`.
+        let access = unsafe { self.lib.clang_getCXXAccessSpecifier(self.raw) };
+        access == 0 || access == ACCESS_PUBLIC
+    }
+
+    pub(crate) fn is_static_method(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_CXXMethod_isStatic(self.raw) != 0 }
+    }
+
+    pub(crate) fn is_virtual_method(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_CXXMethod_isVirtual(self.raw) != 0 }
+    }
+
+    /// Whether this is a copy or move constructor.
+    pub(crate) fn is_copy_or_move_constructor(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe {
+            self.lib.clang_CXXConstructor_isCopyConstructor(self.raw) != 0
+                || self.lib.clang_CXXConstructor_isMoveConstructor(self.raw) != 0
+        }
+    }
+
+    /// Whether this is a `= delete`d function (`false` if libclang
+    /// cannot tell).
+    pub(crate) fn is_deleted(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_CXXMethod_isDeleted(self.raw) }.is_some_and(|v| v != 0)
+    }
+
+    /// The symbol name, as the target's assembler spells it (C++ names
+    /// mangled, Apple's `_` prefix included). `None` if libclang is too old.
+    pub(crate) fn mangling(self) -> Option<String> {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_Cursor_getMangling(self.raw) }.map(|s| take(self.lib, s))
+    }
+
+    /// Whether the function is declared not to throw (`noexcept`, `throw()`,
+    /// `__attribute__((nothrow))`; `noexcept(expr)` counts as throwing).
+    /// `None` if libclang is too old to tell.
+    pub(crate) fn is_noexcept(self) -> Option<bool> {
+        // SAFETY: see `kind`.
+        let spec = unsafe { self.lib.clang_getCursorExceptionSpecificationType(self.raw) }?;
+        // DynamicNone (`throw()`), BasicNoexcept, NoThrow.
+        Some(matches!(spec, 1 | 4 | 9))
+    }
+
+    /// Whether the function is declared `inline` (or `constexpr`); `false`
+    /// if libclang cannot tell.
+    pub(crate) fn is_inline(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_Cursor_isFunctionInlined(self.raw) }.is_some_and(|v| v != 0)
+    }
+
+    /// Whether this is an `enum class` (`false` if libclang cannot tell).
+    pub(crate) fn is_scoped_enum(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_EnumDecl_isScoped(self.raw) }.is_some_and(|v| v != 0)
+    }
+
     pub(crate) fn storage_class(self) -> c_int {
         // SAFETY: see `kind`.
         unsafe { self.lib.clang_Cursor_getStorageClass(self.raw) }
@@ -880,6 +976,12 @@ impl<'tu> Type<'tu> {
     pub(crate) fn canonical(self) -> Self {
         // SAFETY: see `spelling`.
         self.wrap(unsafe { self.lib.clang_getCanonicalType(self.raw) })
+    }
+
+    /// Whether this is a C++ POD type (always true in C).
+    pub(crate) fn is_pod(self) -> bool {
+        // SAFETY: see `spelling`.
+        unsafe { self.lib.clang_isPODType(self.raw) != 0 }
     }
 
     pub(crate) fn pointee(self) -> Self {

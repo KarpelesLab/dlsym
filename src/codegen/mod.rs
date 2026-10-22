@@ -129,6 +129,13 @@ impl Builder {
         self
     }
 
+    /// Parses the headers as C++ (automatic for `.hpp`, `.hh`, `.hxx` and
+    /// `.h++`). See [`parse`] for what C++ is supported.
+    pub fn cpp(mut self, cpp: bool) -> Self {
+        self.parse.cpp = cpp;
+        self
+    }
+
     /// Generates bindings even if clang reports errors.
     pub fn keep_going(mut self, keep_going: bool) -> Self {
         self.parse.keep_going = keep_going;
@@ -242,18 +249,18 @@ pub fn probe(header: &ir::Header, names: &[String]) -> (Option<String>, Vec<Stri
         return (None, missing, warnings);
     };
     for item in &header.items {
-        let symbol = match item {
-            ir::Item::Function(f) => &f.name,
-            ir::Item::Var(v) => &v.name,
+        let (rust, symbol) = match item {
+            ir::Item::Function(f) => (&f.name, f.symbol()),
+            ir::Item::Var(v) => (&v.name, v.symbol()),
             _ => continue,
         };
         // SAFETY: only the address is looked up; nothing is called.
-        let found = unsafe { lib.get::<*const u8>(symbol.as_str()) };
+        let found = unsafe { lib.get::<*const u8>(symbol) };
         if let Err(crate::Error::SymbolNotFound { .. }) = found {
             warnings.push(format!(
-                "`{symbol}` is not exported by {name}; marked #[optional]"
+                "`{rust}` is not exported by {name}; marked #[optional]"
             ));
-            missing.push(symbol.clone());
+            missing.push(rust.clone());
         }
     }
     (Some(name), missing, warnings)
