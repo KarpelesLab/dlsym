@@ -35,21 +35,23 @@ pub fn symbol<O: ?Sized, F: SymbolType>(_owner: &O, addr: *mut c_void) -> Symbol
     Symbol::new(F::from_address(addr).expect("dlsym: null symbol"))
 }
 
-/// Returns the indices of `names` sorted by name. Evaluated once per
-/// `library!` struct at compile time, so that [`index_of`] can binary-search.
-pub const fn sort_order<const N: usize>(names: &[&str]) -> [usize; N] {
+/// Returns `(hash, index)` for each of `names`, sorted by hash. Evaluated
+/// once per `library!` struct at compile time, so that [`index_of`] can
+/// binary-search. Sorting 64-bit hashes rather than strings keeps the
+/// compile-time cost low for thousands of names.
+pub const fn sort_order<const N: usize>(names: &[&str]) -> [(u64, usize); N] {
     assert!(names.len() == N);
-    let mut order = [0; N];
+    let mut order = [(0u64, 0usize); N];
     let mut i = 0;
     while i < N {
-        order[i] = i;
+        order[i] = (fnv1a(names[i]), i);
         i += 1;
     }
     // Heapsort: in place, iterative, O(N log N).
     let mut start = N / 2;
     while start > 0 {
         start -= 1;
-        sift_down(names, &mut order, start, N);
+        sift_down(&mut order, start, N);
     }
     let mut end = N;
     while end > 1 {
@@ -57,21 +59,21 @@ pub const fn sort_order<const N: usize>(names: &[&str]) -> [usize; N] {
         let tmp = order[0];
         order[0] = order[end];
         order[end] = tmp;
-        sift_down(names, &mut order, 0, end);
+        sift_down(&mut order, 0, end);
     }
     order
 }
 
-const fn sift_down(names: &[&str], order: &mut [usize], mut root: usize, end: usize) {
+const fn sift_down(order: &mut [(u64, usize)], mut root: usize, end: usize) {
     loop {
         let mut child = 2 * root + 1;
         if child >= end {
             return;
         }
-        if child + 1 < end && str_cmp(names[order[child]], names[order[child + 1]]) < 0 {
+        if child + 1 < end && order[child].0 < order[child + 1].0 {
             child += 1;
         }
-        if str_cmp(names[order[root]], names[order[child]]) >= 0 {
+        if order[root].0 >= order[child].0 {
             return;
         }
         let tmp = order[root];
@@ -83,20 +85,38 @@ const fn sift_down(names: &[&str], order: &mut [usize], mut root: usize, end: us
 
 /// Returns the position of `name` in `names`, given `order` from
 /// [`sort_order`]. Evaluated at compile time.
-pub const fn index_of(names: &[&str], order: &[usize], name: &str) -> usize {
+pub const fn index_of(names: &[&str], order: &[(u64, usize)], name: &str) -> usize {
+    let hash = fnv1a(name);
     let (mut lo, mut hi) = (0, order.len());
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        let c = str_cmp(names[order[mid]], name);
-        if c == 0 {
-            return order[mid];
-        } else if c < 0 {
+        if order[mid].0 < hash {
             lo = mid + 1;
         } else {
             hi = mid;
         }
     }
+    // `lo` is the first entry with this hash; check each (collisions).
+    while lo < order.len() && order[lo].0 == hash {
+        if str_cmp(names[order[lo].1], name) == 0 {
+            return order[lo].1;
+        }
+        lo += 1;
+    }
     panic!("dlsym: symbol name not found")
+}
+
+/// 64-bit FNV-1a.
+const fn fnv1a(s: &str) -> u64 {
+    let bytes = s.as_bytes();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+        i += 1;
+    }
+    hash
 }
 
 /// Lexicographic byte comparison, as `-1`, `0` or `1`.

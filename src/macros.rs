@@ -100,6 +100,10 @@ pub trait Bindings: Sized {
 /// Items can carry `#[cfg(..)]`: when disabled, the symbol is not looked up
 /// and the method does not exist.
 ///
+/// Expansion time grows with the square of the size of each block, so split
+/// very large APIs into several blocks of a few hundred items at most
+/// (`dlsym-gen` emits blocks of 64).
+///
 /// Variadic functions are limited to the `"C"` and `"C-unwind"` ABIs with
 /// 1 to 6 fixed arguments (the variadic [`SymbolType`](crate::SymbolType)
 /// implementations).
@@ -110,52 +114,39 @@ macro_rules! library {
     (
         $(#[$meta:meta])*
         $vis:vis struct $name:ident {
-            $(
-                unsafe extern $abi:literal {
-                    $(
-                        $(#[$($attr:tt)*])*
-                        $ivis:vis $($kw:ident)+
-                        $(( $($args:tt)* ))?
-                        $(-> $ret:ty)?
-                        $(: $sty:ty)?
-                        ;
-                    )*
-                }
-            )*
+            $( unsafe extern $abi:literal { $($body:tt)* } )*
         }
     ) => {
         $(#[$meta])*
         $vis struct $name {
             __dlsym_library: $crate::Library,
-            __dlsym_symbols: $crate::__private::Symbols<
-                { <[&str]>::len(&[$($( ::core::stringify!($($kw)+), )*)*]) }
-            >,
+            __dlsym_symbols: $crate::__private::Symbols<{ $name::__DLSYM_COUNT }>,
         }
 
         impl $name {
-            const __DLSYM_NAMES: &'static [&'static str] = &[
-                $($( $crate::__dlsym_item!(@name {} $abi [$(#[$($attr)*])*] [$ivis] [$($kw)+]
-                    [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]), )*)*
-            ];
-            const __DLSYM_ORDER: &'static [usize] = &$crate::__private::sort_order::<
-                { <[&str]>::len(&[$($( ::core::stringify!($($kw)+), )*)*]) }
-            >(Self::__DLSYM_NAMES);
+            const __DLSYM_COUNT: usize = 0 $(+ $crate::__dlsym_block!{count $abi { $($body)* }})*;
+            // References, not arrays: each use of a constant copies its value.
+            const __DLSYM_NAMES: &'static [&'static str] = &{
+                let mut names = [""; $name::__DLSYM_COUNT];
+                let mut index = 0usize;
+                $( $crate::__dlsym_block!{names {names, index} $abi { $($body)* }} )*
+                let _ = index;
+                names
+            };
+            // Sorting thousands of names at compile time is legitimately long.
+            #[allow(long_running_const_eval)]
+            const __DLSYM_ORDER: &'static [(u64, usize)] =
+                &$crate::__private::sort_order::<{ $name::__DLSYM_COUNT }>($name::__DLSYM_NAMES);
 
-            $($(
-                $crate::__dlsym_item!(@method {} $abi [$(#[$($attr)*])*] [$ivis] [$($kw)+]
-                    [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]);
-            )*)*
+            $( $crate::__dlsym_block!{methods {} $abi { $($body)* }} )*
         }
 
         impl $crate::Bindings for $name {
             #[allow(unused_mut, unused_assignments, unused_variables)]
             fn load(library: $crate::Library) -> $crate::Result<Self> {
-                let mut symbols = [::core::ptr::null_mut(); { <[&str]>::len($name::__DLSYM_NAMES) }];
+                let mut symbols = [::core::ptr::null_mut(); $name::__DLSYM_COUNT];
                 let mut index = 0usize;
-                $($(
-                    $crate::__dlsym_item!{@load {&library, symbols, index} $abi [$(#[$($attr)*])*]
-                        [$ivis] [$($kw)+] [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]}
-                )*)*
+                $( $crate::__dlsym_block!{load {&library, symbols, index} $abi { $($body)* }} )*
                 ::core::result::Result::Ok(Self {
                     __dlsym_symbols: $crate::__private::Symbols(symbols),
                     __dlsym_library: library,
@@ -177,154 +168,176 @@ macro_rules! library {
     };
 }
 
-/// Per-item expansion for [`library!`]. Not public API.
-///
-/// Every invocation has the shape
-/// `@mode {ctx} "abi" [attrs] [vis] [keywords] [(args)] [-> ret] [: type]`.
-/// It first sorts the item's attributes (`#[optional]`, `#[link_name]`, and
-/// the rest), then decodes the keywords into a safety, a kind and a name,
-/// then generates the requested piece. Recursion is bounded by the number of
-/// attributes on a single item.
+/// Matches the items of one `unsafe extern` block. Matching is done per
+/// block (rustc's matcher is quadratic in the size of what one pattern
+/// matches), and in four passes: count, names, methods and load statements.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __dlsym_item {
-    // ---- Entry: sort attributes. -------------------------------------------
-    (@$mode:ident $ctx:tt $abi:literal [$($attrs:tt)*] $($rest:tt)*) => {
-        $crate::__dlsym_item!{@attrs ($mode $ctx $abi $($rest)*) [no] [] [] $($attrs)*}
+macro_rules! __dlsym_block {
+    (count $abi:literal { $(
+        $(#[$($attr:tt)*])* $ivis:vis $($kw:ident)+
+        $(( $($args:tt)* ))? $(-> $ret:ty)? $(: $sty:ty)? ;
+    )* }) => {
+        0 $(+ <[&str]>::len(&[::core::stringify!($($kw)+)]))*
     };
-    (@attrs $k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[optional] $($t:tt)*) => {
-        $crate::__dlsym_item!{@attrs $k [yes] [$($l)*] [$($a)*] $($t)*}
+    (names {$names:ident, $i:ident} $abi:literal { $(
+        $(#[$($attr:tt)*])* $ivis:vis $($kw:ident)+
+        $(( $($args:tt)* ))? $(-> $ret:ty)? $(: $sty:ty)? ;
+    )* }) => {
+        $(
+            $names[$i] = $crate::__dlsym_name!($($kw)+);
+            $i += 1;
+        )*
     };
-    (@attrs $k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[link_name = $link:literal] $($t:tt)*) => {
-        $crate::__dlsym_item!{@attrs $k [$o] [$link] [$($a)*] $($t)*}
+    (methods $ctx:tt $abi:literal { $(
+        $(#[$($attr:tt)*])* $ivis:vis $($kw:ident)+
+        $(( $($args:tt)* ))? $(-> $ret:ty)? $(: $sty:ty)? ;
+    )* }) => {
+        $(
+            $crate::__dlsym_attrs!{(method {} $abi [$ivis] [$($kw)+]
+                [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]) [no] [] [] $(#[$($attr)*])*}
+        )*
     };
-    (@attrs $k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[$($x:tt)*] $($t:tt)*) => {
-        $crate::__dlsym_item!{@attrs $k [$o] [$($l)*] [$($a)* #[$($x)*]] $($t)*}
+    (load $ctx:tt $abi:literal { $(
+        $(#[$($attr:tt)*])* $ivis:vis $($kw:ident)+
+        $(( $($args:tt)* ))? $(-> $ret:ty)? $(: $sty:ty)? ;
+    )* }) => {
+        $(
+            $crate::__dlsym_attrs!{(load $ctx $abi [$ivis] [$($kw)+]
+                [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]) [no] [] [] $(#[$($attr)*])*}
+        )*
     };
-    (@attrs ($mode:ident $ctx:tt $abi:literal [$vis:vis] [$($kw:ident)+] $($rest:tt)*)
-        [$o:ident] [$($l:tt)*] [$($a:tt)*]) => {
-        $crate::__dlsym_item!{@decode ($mode $ctx $abi [$o] [$($l)*] [$($a)*] [$vis] $($rest)*)
-            $($kw)+}
-    };
+}
 
-    // ---- Decode the keywords into `safety kind name`. ----------------------
-    (@decode ($($k:tt)*) fn $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe fn $n} };
-    (@decode ($($k:tt)*) unsafe fn $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe fn $n} };
-    (@decode ($($k:tt)*) safe fn $n:ident) => { $crate::__dlsym_item!{@gen $($k)* safe fn $n} };
-    (@decode ($($k:tt)*) static $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe static $n} };
-    (@decode ($($k:tt)*) unsafe static $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe static $n} };
-    (@decode ($($k:tt)*) safe static $n:ident) => { $crate::__dlsym_item!{@gen $($k)* safe static $n} };
-    (@decode ($($k:tt)*) static mut $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe mut $n} };
-    (@decode ($($k:tt)*) unsafe static mut $n:ident) => { $crate::__dlsym_item!{@gen $($k)* unsafe mut $n} };
-    (@decode ($($k:tt)*) $($kw:ident)+) => {
+// Per-item expansion for `library!`, split into one small macro per stage
+// so that each invocation only tries a few rules. None of these are public
+// API.
+//
+// 1. `__dlsym_attrs` sorts an item's attributes into `#[optional]`,
+//    `#[link_name]` and the rest (recursing once per attribute).
+// 2. `__dlsym_decode` turns its keywords into `safety kind name`.
+// 3. `__dlsym_gen` emits the requested piece: a `load` statement or a
+//    `method`.
+
+/// The name of a `library!` item: the last of its keywords.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_name {
+    (fn $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (safe fn $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (unsafe fn $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (static $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (safe static $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (unsafe static $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (static mut $n:ident) => {
+        ::core::stringify!($n)
+    };
+    (unsafe static mut $n:ident) => {
+        ::core::stringify!($n)
+    };
+    // Malformed items are reported by `__dlsym_decode`.
+    ($($kw:ident)+) => {
+        ""
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_attrs {
+    ($k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[optional] $($t:tt)*) => {
+        $crate::__dlsym_attrs!{$k [yes] [$($l)*] [$($a)*] $($t)*}
+    };
+    ($k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[link_name = $link:literal] $($t:tt)*) => {
+        $crate::__dlsym_attrs!{$k [$o] [$link] [$($a)*] $($t)*}
+    };
+    ($k:tt [$o:ident] [$($l:tt)*] [$($a:tt)*] #[$($x:tt)*] $($t:tt)*) => {
+        $crate::__dlsym_attrs!{$k [$o] [$($l)*] [$($a)* #[$($x)*]] $($t)*}
+    };
+    (($mode:ident $ctx:tt $abi:literal [$vis:vis] [$($kw:ident)+] $($rest:tt)*)
+        [$o:ident] [$($l:tt)*] [$($a:tt)*]) => {
+        $crate::__dlsym_decode!{($mode $ctx $abi [$o] [$($l)*] [$($a)*] [$vis] $($rest)*) $($kw)+}
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_decode {
+    (($($k:tt)*) fn $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe fn $n} };
+    (($($k:tt)*) unsafe fn $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe fn $n} };
+    (($($k:tt)*) safe fn $n:ident) => { $crate::__dlsym_gen!{$($k)* safe fn $n} };
+    (($($k:tt)*) static $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe static $n} };
+    (($($k:tt)*) unsafe static $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe static $n} };
+    (($($k:tt)*) safe static $n:ident) => { $crate::__dlsym_gen!{$($k)* safe static $n} };
+    (($($k:tt)*) static mut $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe mut $n} };
+    (($($k:tt)*) unsafe static mut $n:ident) => { $crate::__dlsym_gen!{$($k)* unsafe mut $n} };
+    (($($k:tt)*) $($kw:ident)+) => {
         ::core::compile_error!(::core::concat!(
             "dlsym::library!: expected `[safe|unsafe] fn NAME(..)` or ",
             "`[safe|unsafe] static [mut] NAME: TYPE`, found `",
             ::core::stringify!($($kw)+), "`"
         ));
     };
+}
 
-    // ---- @name: the key used to find the symbol's slot. --------------------
-    (@gen name $ctx:tt $abi:literal $($rest:tt)*) => {
-        $crate::__dlsym_item!(@name_of $($rest)*)
-    };
-    (@name_of [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis] $($x:tt)*) => {
-        $crate::__dlsym_item!(@last $($x)*)
-    };
-    (@last [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*] $safety:ident $kind:ident $n:ident) => {
-        ::core::stringify!($n)
-    };
-
-    // ---- @load: resolve the symbol's address into its slot. ---------------
-    // Emits `#[cfg(..)]* { symbols[index] = resolve(..)?; } index += 1;` so
-    // that items disabled by `#[cfg]` are not looked up.
-    (@gen load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] [$link:literal]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_gen {
+    // ---- load: resolve the symbol's address into its slot. ----------------
+    (load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] [$link:literal]
         [$($a:tt)*] [$vis:vis] $($x:tt)*) => {
-        $crate::__dlsym_item!{@load_stmt {$syms $i ($crate::__private::resolve(
+        $crate::__dlsym_load_stmt!{{$syms $i ($crate::__private::resolve(
             $lib,
             const { $crate::__private::link_name(::core::concat!($link, "\0")) },
-            $crate::__dlsym_item!(@optional $o),
+            $crate::__dlsym_optional!($o),
         )?)} [] $($a)*}
     };
-    (@gen load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] []
+    (load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] []
         [$($a:tt)*] [$vis:vis] [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*]
         $safety:ident $kind:ident $n:ident) => {
-        $crate::__dlsym_item!{@load_stmt {$syms $i ($crate::__private::resolve(
+        $crate::__dlsym_load_stmt!{{$syms $i ($crate::__private::resolve(
             $lib,
             const { $crate::__private::link_name(::core::concat!(::core::stringify!($n), "\0")) },
-            $crate::__dlsym_item!(@optional $o),
+            $crate::__dlsym_optional!($o),
         )?)} [] $($a)*}
     };
-    (@load_stmt $k:tt [$($c:tt)*] #[cfg $p:tt] $($t:tt)*) => {
-        $crate::__dlsym_item!{@load_stmt $k [$($c)* $p] $($t)*}
-    };
-    (@load_stmt $k:tt [$($c:tt)*] #[$($x:tt)*] $($t:tt)*) => {
-        $crate::__dlsym_item!{@load_stmt $k [$($c)*] $($t)*}
-    };
-    (@load_stmt {$syms:ident $i:ident ($($e:tt)*)} [$($p:tt)*]) => {
-        $(#[cfg $p])*
-        {
-            $syms[$i] = $($e)*;
-        }
-        $i += 1;
-    };
-    (@optional yes) => { true };
-    (@optional no) => { false };
 
-    // ---- @method: the accessor. --------------------------------------------
+    // ---- method: the accessor. ---------------------------------------------
     // Variadic function.
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [($($arg:ident : $t:ty),+ , ...)] [$(-> $r:ty)?] [] $safety:ident fn $n:ident) => {
         $($a)*
         ///
         /// Variadic: call it through `Symbol::with`.
         #[allow(non_snake_case)]
-        $vis fn $n(&self) -> $crate::__dlsym_item!(@wrap $o
+        $vis fn $n(&self) -> $crate::__dlsym_wrap!($o
             $crate::Symbol<'_, unsafe extern $abi fn($($t),+ , ...) $(-> $r)?>)
         {
             let addr = self.__dlsym_symbols.0
                 [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
-            $crate::__dlsym_item!(@unwrap $o addr => $crate::__private::symbol(self, addr))
+            $crate::__dlsym_unwrap!($o addr => $crate::__private::symbol(self, addr))
         }
     };
     // Function.
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [($($arg:ident : $t:ty),* $(,)?)] [$(-> $r:ty)?] [] $safety:ident fn $n:ident) => {
-        $crate::__dlsym_item!{@fn_method $safety $o [$($a)*] [$vis] $n
+        $crate::__dlsym_fn_method!{$safety $o [$($a)*] [$vis] $n
             [unsafe extern $abi fn($($t),*) $(-> $r)?] [$($arg : $t),*]
-            [$crate::__dlsym_item!(@ret $($r)?)]}
-    };
-    (@fn_method unsafe $o:ident [$($a:tt)*] [$vis:vis] $n:ident [$f:ty] [$($arg:ident : $t:ty),*] [$r:ty]) => {
-        $($a)*
-        ///
-        /// # Safety
-        ///
-        /// The call must satisfy the foreign function's contract.
-        #[allow(non_snake_case, clippy::too_many_arguments)]
-        $vis unsafe fn $n(&self, $($arg: $t),*) -> $crate::__dlsym_item!(@wrap $o $r) {
-            let addr = self.__dlsym_symbols.0
-                [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
-            $crate::__dlsym_item!(@unwrap $o addr =>
-                // SAFETY: `load` resolved this slot to a function with this
-                // signature (asserted by the `unsafe extern` block), and
-                // `self` owns the library. The call contract is the caller's.
-                unsafe { ::core::mem::transmute::<*mut ::core::ffi::c_void, $f>(addr)($($arg),*) })
-        }
-    };
-    (@fn_method safe $o:ident [$($a:tt)*] [$vis:vis] $n:ident [$f:ty] [$($arg:ident : $t:ty),*] [$r:ty]) => {
-        $($a)*
-        #[allow(non_snake_case, clippy::too_many_arguments)]
-        $vis fn $n(&self, $($arg: $t),*) -> $crate::__dlsym_item!(@wrap $o $r) {
-            let addr = self.__dlsym_symbols.0
-                [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
-            $crate::__dlsym_item!(@unwrap $o addr =>
-                // SAFETY: as for unsafe items, and the `unsafe extern` block
-                // asserts that this function is safe to call.
-                unsafe { ::core::mem::transmute::<*mut ::core::ffi::c_void, $f>(addr)($($arg),*) })
-        }
+            [$crate::__dlsym_ret!($($r)?)]}
     };
     // Data.
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [] [] [: $t:ty] unsafe static $n:ident) => {
         $($a)*
         ///
@@ -332,52 +345,140 @@ macro_rules! __dlsym_item {
         ///
         /// The data must not be mutated while the reference is alive.
         #[allow(non_snake_case)]
-        $vis unsafe fn $n(&self) -> $crate::__dlsym_item!(@wrap $o &$t) {
+        $vis unsafe fn $n(&self) -> $crate::__dlsym_wrap!($o &$t) {
             let addr = self.__dlsym_symbols.0
                 [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
             // SAFETY: `load` resolved this slot to a non-null `$t` that lives
             // as long as the library `self` owns.
-            $crate::__dlsym_item!(@unwrap $o addr => unsafe { &*addr.cast::<$t>() })
+            $crate::__dlsym_unwrap!($o addr => unsafe { &*addr.cast::<$t>() })
         }
     };
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [] [] [: $t:ty] safe static $n:ident) => {
         $($a)*
         #[allow(non_snake_case)]
-        $vis fn $n(&self) -> $crate::__dlsym_item!(@wrap $o &$t) {
+        $vis fn $n(&self) -> $crate::__dlsym_wrap!($o &$t) {
             const { $crate::__private::assert_sync::<$t>() };
             let addr = self.__dlsym_symbols.0
                 [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
             // SAFETY: as for unsafe statics, and the `unsafe extern` block
             // asserts that reading it is safe.
-            $crate::__dlsym_item!(@unwrap $o addr => unsafe { &*addr.cast::<$t>() })
+            $crate::__dlsym_unwrap!($o addr => unsafe { &*addr.cast::<$t>() })
         }
     };
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [] [] [: $t:ty] unsafe mut $n:ident) => {
         $($a)*
         #[allow(non_snake_case)]
-        $vis fn $n(&self) -> $crate::__dlsym_item!(@wrap $o *mut $t) {
+        $vis fn $n(&self) -> $crate::__dlsym_wrap!($o *mut $t) {
             let addr = self.__dlsym_symbols.0
                 [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
-            $crate::__dlsym_item!(@unwrap $o addr => addr.cast::<$t>())
+            $crate::__dlsym_unwrap!($o addr => addr.cast::<$t>())
         }
     };
-    (@gen method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
+    (method $ctx:tt $abi:literal [$o:ident] [$($l:tt)*] [$($a:tt)*] [$vis:vis]
         [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*] $safety:ident $kind:ident $n:ident) => {
         ::core::compile_error!(::core::concat!(
             "dlsym::library!: malformed item `", ::core::stringify!($n),
             "`: functions need `(args)` and no `: TYPE`; statics need `: TYPE`"
         ));
     };
+}
 
-    // ---- Small helpers. ----------------------------------------------------
-    (@ret) => { () };
-    (@ret $r:ty) => { $r };
-    (@wrap no $($t:tt)*) => { $($t)* };
-    (@wrap yes $($t:tt)*) => { ::core::option::Option<$($t)*> };
-    (@unwrap no $addr:ident => $e:expr) => { $e };
-    (@unwrap yes $addr:ident => $e:expr) => {
-        if $addr.is_null() { ::core::option::Option::None } else { ::core::option::Option::Some($e) }
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_fn_method {
+    (unsafe $o:ident [$($a:tt)*] [$vis:vis] $n:ident [$f:ty] [$($arg:ident : $t:ty),*] [$r:ty]) => {
+        $($a)*
+        ///
+        /// # Safety
+        ///
+        /// The call must satisfy the foreign function's contract.
+        #[allow(non_snake_case, clippy::too_many_arguments)]
+        $vis unsafe fn $n(&self, $($arg: $t),*) -> $crate::__dlsym_wrap!($o $r) {
+            let addr = self.__dlsym_symbols.0
+                [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
+            $crate::__dlsym_unwrap!($o addr =>
+                // SAFETY: `load` resolved this slot to a function with this
+                // signature (asserted by the `unsafe extern` block), and
+                // `self` owns the library. The call contract is the caller's.
+                unsafe { ::core::mem::transmute::<*mut ::core::ffi::c_void, $f>(addr)($($arg),*) })
+        }
+    };
+    (safe $o:ident [$($a:tt)*] [$vis:vis] $n:ident [$f:ty] [$($arg:ident : $t:ty),*] [$r:ty]) => {
+        $($a)*
+        #[allow(non_snake_case, clippy::too_many_arguments)]
+        $vis fn $n(&self, $($arg: $t),*) -> $crate::__dlsym_wrap!($o $r) {
+            let addr = self.__dlsym_symbols.0
+                [const { $crate::__private::index_of(Self::__DLSYM_NAMES, Self::__DLSYM_ORDER, ::core::stringify!($n)) }];
+            $crate::__dlsym_unwrap!($o addr =>
+                // SAFETY: as for unsafe items, and the `unsafe extern` block
+                // asserts that this function is safe to call.
+                unsafe { ::core::mem::transmute::<*mut ::core::ffi::c_void, $f>(addr)($($arg),*) })
+        }
+    };
+}
+
+/// Emits `#[cfg(..)]* { symbols[index] = resolve(..)?; } index += 1;`, so
+/// that items disabled by `#[cfg]` are not looked up.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_load_stmt {
+    ($k:tt [$($c:tt)*] #[cfg $p:tt] $($t:tt)*) => {
+        $crate::__dlsym_load_stmt!{$k [$($c)* $p] $($t)*}
+    };
+    ($k:tt [$($c:tt)*] #[$($x:tt)*] $($t:tt)*) => {
+        $crate::__dlsym_load_stmt!{$k [$($c)*] $($t)*}
+    };
+    ({$syms:ident $i:ident ($($e:tt)*)} [$($p:tt)*]) => {
+        $(#[cfg $p])*
+        {
+            $syms[$i] = $($e)*;
+        }
+        $i += 1;
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_optional {
+    (yes) => {
+        true
+    };
+    (no) => {
+        false
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_ret {
+    () => {
+        ()
+    };
+    ($r:ty) => {
+        $r
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_wrap {
+    (no $($t:tt)*) => { $($t)* };
+    (yes $($t:tt)*) => { ::core::option::Option<$($t)*> };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_unwrap {
+    (no $addr:ident => $e:expr) => {
+        $e
+    };
+    (yes $addr:ident => $e:expr) => {
+        if $addr.is_null() {
+            ::core::option::Option::None
+        } else {
+            ::core::option::Option::Some($e)
+        }
     };
 }

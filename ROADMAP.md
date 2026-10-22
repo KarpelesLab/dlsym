@@ -91,7 +91,10 @@ or gate any new one to the binary.
 
 - [ ] Optional lazy resolution (resolve on first call through a `OnceLock`)
 - [x] Per-item `#[cfg]`: disabled items are neither looked up nor bound
-- [ ] Faster expansion for very large APIs (2000 items take ~11 s to compile)
+- [x] Faster expansion: items are matched per block (rustc's matcher is
+      quadratic in pattern input size) and slots are found by a sorted-hash
+      search; 2000 items in blocks of 64 compile in ~5 s, OpenSSL's bindings
+      in ~3 s
 
 ### Generator
 

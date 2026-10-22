@@ -77,6 +77,9 @@ impl Owned {
 /// module that `include!`s it.
 pub const ALLOW_ATTRIBUTES: &str = "#[allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code, clippy::all, rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::bare_urls)]";
 
+/// Maximum number of items per generated `unsafe extern` block.
+const BLOCK_SIZE: usize = 64;
+
 /// Rust keywords that cannot be used as plain identifiers.
 const KEYWORDS: &[&str] = &[
     "as", "async", "await", "box", "break", "const", "continue", "crate", "dyn", "else", "enum",
@@ -472,7 +475,13 @@ impl<'h> Emitter<'h> {
                 Item::Var(v) => v.name.as_str(),
                 _ => unreachable!(),
             });
-            match blocks.iter_mut().find(|(a, _)| *a == abi) {
+            // `library!` matches each block separately, at a cost quadratic
+            // in its size: keep blocks small.
+            match blocks
+                .iter_mut()
+                .rev()
+                .find(|(a, b)| *a == abi && b.len() < BLOCK_SIZE)
+            {
                 Some((_, b)) => b.push(text),
                 None => blocks.push((abi, vec![text])),
             }
