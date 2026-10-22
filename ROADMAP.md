@@ -89,7 +89,10 @@ or gate any new one to the binary.
 
 ### `library!`
 
-- [ ] Optional lazy resolution (resolve on first call through a `OnceLock`)
+- [-] Lazy resolution: not planned. Resolving upfront costs ~0.1 µs per
+      symbol (0.2 ms for 2000), missing symbols are handled by `#[optional]`
+      and generation-time probing, and lazy resolution would add a check to
+      every call and move errors from load time to call time
 - [x] Per-item `#[cfg]`: disabled items are neither looked up nor bound
 - [x] Faster expansion: items are matched per block (rustc's matcher is
       quadratic in pattern input size) and slots are found by a sorted-hash
