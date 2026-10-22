@@ -1,0 +1,45 @@
+[workspace]
+members = [".", "dlsym-gen"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+authors = ["Karpelès Lab Inc."]
+repository = "https://github.com/KarpelesLab/dlsym"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+[package]
+name = "dlsym"
+description = "Memory-safe bindings around the platform's dynamic library loading primitives"
+keywords = ["dlopen", "dlsym", "ffi", "dynamic", "library"]
+categories = ["api-bindings", "external-ffi-bindings", "os"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[lints]
+workspace = true
