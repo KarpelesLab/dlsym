@@ -275,6 +275,14 @@ pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
     Some(std::ffi::OsStr::from_bytes(name.to_bytes()).into())
 }
 
+// dyld's image list, exported by libSystem. (The `libc` crate's
+// declarations are deprecated in favour of another crate.)
+#[cfg(target_vendor = "apple")]
+unsafe extern "C" {
+    fn _dyld_image_count() -> u32;
+    fn _dyld_get_image_name(image_index: u32) -> *const std::ffi::c_char;
+}
+
 #[cfg(target_vendor = "apple")]
 // One invariant covers every call in the block below.
 #[allow(clippy::multiple_unsafe_ops_per_block)]
@@ -283,8 +291,8 @@ pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
     // SAFETY: the dyld image list functions have no preconditions; each
     // `dlopen(.., RTLD_NOLOAD)` that succeeds is balanced by a `dlclose`.
     unsafe {
-        for i in 0..libc::_dyld_image_count() {
-            let name = libc::_dyld_get_image_name(i);
+        for i in 0.._dyld_image_count() {
+            let name = _dyld_get_image_name(i);
             if name.is_null() {
                 continue;
             }

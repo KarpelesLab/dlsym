@@ -10,7 +10,14 @@ const LIBM: &str = "libm.so.6";
 const LIBM: &str = "/usr/lib/libm.dylib";
 #[cfg(windows)]
 const LIBM: &str = "ucrtbase.dll";
-#[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+#[cfg(target_os = "freebsd")]
+const LIBM: &str = "libm.so.5";
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_vendor = "apple",
+    windows
+)))]
 const LIBM: &str = "libm.so";
 
 type UnaryF64 = unsafe extern "C" fn(f64) -> f64;

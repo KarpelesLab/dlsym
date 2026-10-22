@@ -97,6 +97,8 @@ fn open_first_returns_first_loadable() {
         "/usr/lib/libm.dylib",
         #[cfg(windows)]
         "ucrtbase.dll",
+        #[cfg(target_os = "freebsd")]
+        "libm.so.5",
     ];
     // SAFETY: only system libraries.
     unsafe { Library::open_first(candidates) }.unwrap();
@@ -141,7 +143,14 @@ fn paths_and_address_info() {
     let name = "/usr/lib/libm.dylib";
     #[cfg(windows)]
     let name = "ucrtbase.dll";
-    #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+    #[cfg(target_os = "freebsd")]
+    let name = "libm.so.5";
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "freebsd",
+        target_vendor = "apple",
+        windows
+    )))]
     let name = "libm.so";
     // SAFETY: libm is a system library.
     let lib = unsafe { Library::open(name) }.unwrap();
@@ -159,8 +168,9 @@ fn paths_and_address_info() {
         "{info:?}"
     );
     // glibc's `cos` is an IFUNC resolving to a non-exported implementation,
-    // so check symbol names on `dlsym` itself.
-    #[cfg(unix)]
+    // so check symbol names on `dlsym` itself. (On FreeBSD, `dlsym` lives in
+    // the runtime linker, which `dladdr` does not report.)
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
         let this = Library::this().unwrap();
         // SAFETY: never called.
