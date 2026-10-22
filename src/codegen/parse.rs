@@ -586,7 +586,17 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
     fn symbol_names(&mut self, c: Cursor<'tu>) -> Option<(String, Option<String>)> {
         let spelling = c.spelling();
         let rust = scoped_name(c);
-        match c.mangling().as_deref().and_then(cpp_symbol) {
+        let mut mangled = c.mangling();
+        // MSVC only emits a complete-object destructor (`??_D`) for classes
+        // with virtual bases; the regular one (`??1`) is the base-object
+        // variant, which libclang lists first.
+        if c.kind() == clang::DESTRUCTOR
+            && mangled.as_deref().is_some_and(|m| m.starts_with('?'))
+            && let Some(base) = c.cxx_manglings().into_iter().next()
+        {
+            mangled = Some(base);
+        }
+        match mangled.as_deref().and_then(cpp_symbol) {
             Some(symbol) => Some((rust, Some(symbol.to_owned()))),
             None if rust != spelling => {
                 self.warn(format!(

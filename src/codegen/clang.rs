@@ -44,6 +44,12 @@ pub(crate) struct CXString {
 }
 
 #[repr(C)]
+pub(crate) struct CXStringSet {
+    strings: *mut CXString,
+    count: c_uint,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct CXSourceLocation {
     ptr_data: [*const c_void; 2],
@@ -123,6 +129,10 @@ crate::library! {
             fn clang_CXXConstructor_isMoveConstructor(cursor: CXCursor) -> c_uint;
             #[optional]
             fn clang_Cursor_getMangling(cursor: CXCursor) -> CXString;
+            #[optional]
+            fn clang_Cursor_getCXXManglings(cursor: CXCursor) -> *mut CXStringSet;
+            #[optional]
+            fn clang_disposeStringSet(set: *mut CXStringSet);
             #[optional]
             fn clang_getCursorExceptionSpecificationType(cursor: CXCursor) -> c_int;
             #[optional]
@@ -817,6 +827,36 @@ impl<'tu> Cursor<'tu> {
     pub(crate) fn mangling(self) -> Option<String> {
         // SAFETY: see `kind`.
         unsafe { self.lib.clang_Cursor_getMangling(self.raw) }.map(|s| take(self.lib, s))
+    }
+
+    /// Every symbol a C++ constructor or destructor is emitted as (base
+    /// object variant first). Empty if libclang is too old.
+    pub(crate) fn cxx_manglings(self) -> Vec<String> {
+        let lib = self.lib;
+        // SAFETY: see `kind`.
+        let Some(set) = (unsafe { lib.clang_Cursor_getCXXManglings(self.raw) }) else {
+            return Vec::new();
+        };
+        if set.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: `set` is a live string set; its strings are read, then
+        // the whole set is disposed once (not its strings individually).
+        unsafe {
+            let set_ref = &*set;
+            let out = (0..set_ref.count as usize)
+                .map(|i| {
+                    let s = lib.clang_getCString(*set_ref.strings.add(i));
+                    if s.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(s).to_string_lossy().into_owned()
+                    }
+                })
+                .collect();
+            let _ = lib.clang_disposeStringSet(set);
+            out
+        }
     }
 
     /// Whether the function is declared not to throw (`noexcept`, `throw()`,
