@@ -13,17 +13,21 @@ on:
 jobs:
   s390x:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v7
-      - uses: uraimo/run-on-arch-action@v2
+      - uses: docker/setup-qemu-action@v3
         with:
-          arch: s390x
-          distro: ubuntu_latest
-          install: |
-            apt-get update -q
-            apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev libclang-dev
-          run: |
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-            . "$HOME/.cargo/env"
-            DLSYM_REQUIRE_E2E=1 cargo test --locked --all-features
+          platforms: s390x
+      - name: Test in an s390x container
+        run: |
+          docker run --rm --platform linux/s390x -v "$PWD:/w" -w /w \
+            -e DLSYM_REQUIRE_E2E=1 \
+            ubuntu:24.04 sh -c '
+              set -e
+              apt-get update -q
+              apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev libclang-dev
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+              . "$HOME/.cargo/env"
+              cargo test --locked --all-features
+            '
