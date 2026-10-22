@@ -101,8 +101,8 @@ or gate any new one to the binary.
 
 ### Generator
 
-- [ ] Big-endian bitfield layouts: a weekly s390x (QEMU) workflow runs the
-      end-to-end test; confirm it passes
+- [x] Big-endian: a weekly s390x (QEMU) workflow runs the full suite,
+      including the end-to-end bitfield checks
 - [x] Function-like macros that wrap a single call (e.g. zlib's
       `deflateInit`) as helper methods
 - [x] Cross-generation: `--target` (mapped to clang's triple), recorded in
