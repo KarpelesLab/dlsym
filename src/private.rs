@@ -1,0 +1,137 @@
+//! Support code for [`library!`](crate::library) expansions. Not public API.
+
+use std::ffi::{CStr, c_void};
+
+use crate::os::{Lookup, imp};
+use crate::{Error, Library, Result, Symbol, SymbolType};
+
+/// The resolved addresses of a `library!` struct, in declaration order. Null
+/// means an `#[optional]` symbol that was not found.
+pub struct Symbols<const N: usize>(pub [*mut c_void; N]);
+
+// SAFETY: the addresses are only dereferenced through the generated methods,
+// which carry their own safety contracts (and `Sync` checks for safe data).
+unsafe impl<const N: usize> Send for Symbols<N> {}
+// SAFETY: see above.
+unsafe impl<const N: usize> Sync for Symbols<N> {}
+
+/// Resolves `name`, returning null for missing `optional` symbols.
+pub fn resolve(lib: &Library, name: &CStr, optional: bool) -> Result<*mut c_void> {
+    match imp::lookup(lib.handle(), name) {
+        Lookup::Found(addr) if !addr.is_null() => Ok(addr),
+        _ if optional => Ok(std::ptr::null_mut()),
+        Lookup::Found(_) => Err(Error::NullSymbol { name: name.into() }),
+        Lookup::NotFound(message) => Err(Error::SymbolNotFound {
+            name: name.into(),
+            message,
+        }),
+    }
+}
+
+/// Wraps an address resolved by `owner` into a [`Symbol`] borrowing `owner`.
+pub fn symbol<O: ?Sized, F: SymbolType>(_owner: &O, addr: *mut c_void) -> Symbol<'_, F> {
+    // `load` never stores null for a non-optional symbol, and optional ones
+    // are checked by the caller.
+    Symbol::new(F::from_address(addr).expect("dlsym: null symbol"))
+}
+
+/// Returns the indices of `names` sorted by name. Evaluated once per
+/// `library!` struct at compile time, so that [`index_of`] can binary-search.
+pub const fn sort_order<const N: usize>(names: &[&str]) -> [usize; N] {
+    assert!(names.len() == N);
+    let mut order = [0; N];
+    let mut i = 0;
+    while i < N {
+        order[i] = i;
+        i += 1;
+    }
+    // Heapsort: in place, iterative, O(N log N).
+    let mut start = N / 2;
+    while start > 0 {
+        start -= 1;
+        sift_down(names, &mut order, start, N);
+    }
+    let mut end = N;
+    while end > 1 {
+        end -= 1;
+        let tmp = order[0];
+        order[0] = order[end];
+        order[end] = tmp;
+        sift_down(names, &mut order, 0, end);
+    }
+    order
+}
+
+const fn sift_down(names: &[&str], order: &mut [usize], mut root: usize, end: usize) {
+    loop {
+        let mut child = 2 * root + 1;
+        if child >= end {
+            return;
+        }
+        if child + 1 < end && str_cmp(names[order[child]], names[order[child + 1]]) < 0 {
+            child += 1;
+        }
+        if str_cmp(names[order[root]], names[order[child]]) >= 0 {
+            return;
+        }
+        let tmp = order[root];
+        order[root] = order[child];
+        order[child] = tmp;
+        root = child;
+    }
+}
+
+/// Returns the position of `name` in `names`, given `order` from
+/// [`sort_order`]. Evaluated at compile time.
+pub const fn index_of(names: &[&str], order: &[usize], name: &str) -> usize {
+    let (mut lo, mut hi) = (0, order.len());
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let c = str_cmp(names[order[mid]], name);
+        if c == 0 {
+            return order[mid];
+        } else if c < 0 {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    panic!("dlsym: symbol name not found")
+}
+
+/// Lexicographic byte comparison, as `-1`, `0` or `1`.
+const fn str_cmp(a: &str, b: &str) -> i32 {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let mut i = 0;
+    while i < a.len() && i < b.len() {
+        if a[i] != b[i] {
+            return if a[i] < b[i] { -1 } else { 1 };
+        }
+        i += 1;
+    }
+    if a.len() < b.len() {
+        -1
+    } else if a.len() > b.len() {
+        1
+    } else {
+        0
+    }
+}
+
+/// Turns `"name\0"` (possibly `"r#name\0"` from a raw identifier) into the
+/// symbol name to look up.
+pub const fn link_name(s: &'static str) -> &'static CStr {
+    let bytes = s.as_bytes();
+    let bytes = if bytes.len() > 2 && bytes[0] == b'r' && bytes[1] == b'#' {
+        bytes.split_at(2).1
+    } else {
+        bytes
+    };
+    match CStr::from_bytes_with_nul(bytes) {
+        Ok(name) => name,
+        Err(_) => panic!("dlsym: symbol name contains a NUL byte"),
+    }
+}
+
+/// Fails to compile unless `T` is `Sync`.
+pub const fn assert_sync<T: ?Sized + Sync>() {}

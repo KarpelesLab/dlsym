@@ -11,6 +11,10 @@ mod sealed {
 /// - `unsafe extern "C" fn(..) -> R` (and the `"system"`, `"C-unwind"` and
 ///   `"system-unwind"` ABIs) with up to 12 arguments. Null addresses are
 ///   rejected with [`Error::NullSymbol`](crate::Error::NullSymbol).
+/// - Variadic `unsafe extern "C" fn(A, ...) -> R` (and `"C-unwind"`) with
+///   1 to 6 fixed arguments. These implement [`SymbolType`] but not
+///   [`FnPtr`]: Rust cannot forward a variable argument list, so they are
+///   called through [`Symbol::with`](crate::Symbol::with).
 /// - `*const T` and `*mut T`, for data symbols. Null addresses are allowed.
 ///
 /// Restricting the set of types prevents mistakes such as `get::<u64>(..)`,
@@ -70,13 +74,13 @@ unsafe impl<T> SymbolType for *mut T {
 }
 impl<T> sealed::Sealed for *mut T {}
 
-macro_rules! impl_fn {
-    ($abi:literal; $($ty:ident $val:ident),*) => {
-        impl<R, $($ty),*> sealed::Sealed for unsafe extern $abi fn($($ty),*) -> R {}
+macro_rules! impl_symbol_type_fn {
+    ($($generics:ident),* ; $fn_ty:ty) => {
+        impl<R, $($generics),*> sealed::Sealed for $fn_ty {}
 
         // SAFETY: function pointers are pointer-sized, and `from_address`
         // rejects null, the one value they cannot hold.
-        unsafe impl<R, $($ty),*> SymbolType for unsafe extern $abi fn($($ty),*) -> R {
+        unsafe impl<R, $($generics),*> SymbolType for $fn_ty {
             // The address is reinterpreted, never dereferenced.
             #[allow(clippy::not_unsafe_ptr_arg_deref)]
             fn from_address(addr: *mut c_void) -> Option<Self> {
@@ -92,6 +96,12 @@ macro_rules! impl_fn {
                 self as *mut c_void
             }
         }
+    };
+}
+
+macro_rules! impl_fn {
+    ($abi:literal; $($ty:ident $val:ident),*) => {
+        impl_symbol_type_fn!($($ty),* ; unsafe extern $abi fn($($ty),*) -> R);
 
         impl<R, $($ty),*> FnPtr for unsafe extern $abi fn($($ty),*) -> R {
             type Args = ($($ty,)*);
@@ -127,3 +137,17 @@ impl_fn_all_abis!(A a, B b, C c, D d, E e, F f, G g, H h, I i);
 impl_fn_all_abis!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j);
 impl_fn_all_abis!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k);
 impl_fn_all_abis!(A a, B b, C c, D d, E e, F f, G g, H h, I i, J j, K k, L l);
+
+macro_rules! impl_variadic {
+    ($($ty:ident),+) => {
+        impl_symbol_type_fn!($($ty),+ ; unsafe extern "C" fn($($ty),+, ...) -> R);
+        impl_symbol_type_fn!($($ty),+ ; unsafe extern "C-unwind" fn($($ty),+, ...) -> R);
+    };
+}
+
+impl_variadic!(A);
+impl_variadic!(A, B);
+impl_variadic!(A, B, C);
+impl_variadic!(A, B, C, D);
+impl_variadic!(A, B, C, D, E);
+impl_variadic!(A, B, C, D, E, F);

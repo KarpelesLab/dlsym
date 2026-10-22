@@ -72,14 +72,18 @@ fn explicit_close() {
 
 dlsym::library! {
     struct LibM {
-        fn cos(x: f64) -> f64;
-        fn pow(x: f64, y: f64) -> f64;
+        unsafe extern "C" {
+            fn cos(x: f64) -> f64;
+            fn pow(x: f64, y: f64) -> f64;
+        }
     }
 }
 
 dlsym::library! {
     struct Broken {
-        fn dlsym_definitely_not_a_symbol();
+        unsafe extern "C" {
+            fn dlsym_definitely_not_a_symbol();
+        }
     }
 }
 
@@ -102,8 +106,6 @@ fn library_macro_reports_missing_symbols() {
 #[cfg(unix)]
 #[test]
 fn this_process() {
-    use dlsym::os::unix::LibraryExt;
-
     let me = Library::this().unwrap();
     // SAFETY: `strlen` has this signature and is linked into every Rust
     // program through libc.

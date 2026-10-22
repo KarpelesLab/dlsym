@@ -32,6 +32,9 @@
 //! # Ok(()) }
 //! ```
 
+#[doc(hidden)]
+#[path = "private.rs"]
+pub mod __private;
 #[cfg(feature = "codegen")]
 pub mod codegen;
 mod error;
@@ -43,7 +46,7 @@ mod symbol;
 mod types;
 
 pub use error::Error;
-pub use library::Library;
+pub use library::{Library, library_filename};
 pub use macros::Bindings;
 pub use name::SymbolName;
 pub use symbol::{ArcSymbol, Symbol};

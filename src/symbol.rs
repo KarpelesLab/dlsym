@@ -21,8 +21,9 @@ use crate::{FnPtr, Library, SymbolType};
 /// ```
 ///
 /// Unlike a `Deref<Target = T>` design, the raw pointer is only reachable
-/// through the `unsafe` [`into_inner`](Symbol::into_inner), so it cannot be
-/// copied out and outlive the library by accident.
+/// through `unsafe` methods ([`with`](Symbol::with),
+/// [`into_inner`](Symbol::into_inner)), so it cannot be copied out and
+/// outlive the library by accident.
 pub struct Symbol<'lib, T> {
     inner: T,
     _lib: PhantomData<&'lib Library>,
@@ -39,6 +40,31 @@ impl<T: SymbolType> Symbol<'_, T> {
     /// Returns the symbol's address.
     pub fn as_ptr(&self) -> *mut c_void {
         self.inner.to_address()
+    }
+
+    /// Runs `f` with the raw symbol.
+    ///
+    /// This is how variadic functions are called:
+    ///
+    /// ```no_run
+    /// # use dlsym::Library;
+    /// # use std::ffi::{c_char, c_int};
+    /// # let libc = unsafe { Library::open("libc.so.6") }.unwrap();
+    /// let printf = unsafe {
+    ///     libc.get::<unsafe extern "C" fn(*const c_char, ...) -> c_int>(c"printf")
+    /// }
+    /// .unwrap();
+    /// // SAFETY: the format string matches the arguments, and `f` is not
+    /// // kept past the closure.
+    /// unsafe { printf.with(|f| f(c"%d\n".as_ptr(), 42)) };
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `f` must not let the raw symbol escape, since it would no longer be
+    /// tied to the library's lifetime.
+    pub unsafe fn with<R>(&self, f: impl FnOnce(T) -> R) -> R {
+        f(self.inner)
     }
 
     /// Detaches the symbol from its library's lifetime.
@@ -60,6 +86,45 @@ impl<T: FnPtr> Symbol<'_, T> {
     pub unsafe fn call(&self, args: T::Args) -> T::Output {
         // SAFETY: the library outlives `self`; the rest is the caller's.
         unsafe { self.inner.call(args) }
+    }
+}
+
+impl<'lib, T> Symbol<'lib, *const T> {
+    /// Dereferences a data symbol.
+    ///
+    /// # Safety
+    ///
+    /// The address must be non-null, aligned, and point to a valid `T` that
+    /// is not mutated for as long as the reference is alive.
+    pub unsafe fn as_ref(&self) -> &'lib T {
+        // SAFETY: forwarded to the caller; the library outlives `'lib`.
+        unsafe { &*self.inner }
+    }
+}
+
+impl<'lib, T> Symbol<'lib, *mut T> {
+    /// Dereferences a data symbol.
+    ///
+    /// # Safety
+    ///
+    /// The address must be non-null, aligned, and point to a valid `T` that
+    /// is not mutated for as long as the reference is alive.
+    pub unsafe fn as_ref(&self) -> &'lib T {
+        // SAFETY: forwarded to the caller; the library outlives `'lib`.
+        unsafe { &*self.inner }
+    }
+
+    /// Mutably dereferences a data symbol.
+    ///
+    /// # Safety
+    ///
+    /// The address must be non-null, aligned, and point to a valid `T`, and
+    /// nothing else (including other copies of this `Symbol` and the library
+    /// itself) may access it while the reference is alive.
+    #[allow(clippy::mut_from_ref)]
+    pub unsafe fn as_mut(&self) -> &'lib mut T {
+        // SAFETY: forwarded to the caller; the library outlives `'lib`.
+        unsafe { &mut *self.inner }
     }
 }
 
@@ -101,6 +166,15 @@ impl<T: SymbolType> ArcSymbol<T> {
         self.inner.to_address()
     }
 
+    /// Runs `f` with the raw symbol. See [`Symbol::with`].
+    ///
+    /// # Safety
+    ///
+    /// `f` must not let the raw symbol escape.
+    pub unsafe fn with<R>(&self, f: impl FnOnce(T) -> R) -> R {
+        f(self.inner)
+    }
+
     /// Detaches the symbol from its library.
     ///
     /// # Safety
@@ -121,6 +195,30 @@ impl<T: FnPtr> ArcSymbol<T> {
         // SAFETY: `self.lib` keeps the library loaded; the rest is the
         // caller's.
         unsafe { self.inner.call(args) }
+    }
+}
+
+impl<T> ArcSymbol<*const T> {
+    /// Dereferences a data symbol. See [`Symbol::as_ref`].
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Symbol::as_ref`].
+    pub unsafe fn as_ref(&self) -> &T {
+        // SAFETY: forwarded to the caller; `self.lib` keeps the data alive.
+        unsafe { &*self.inner }
+    }
+}
+
+impl<T> ArcSymbol<*mut T> {
+    /// Dereferences a data symbol. See [`Symbol::as_ref`].
+    ///
+    /// # Safety
+    ///
+    /// Same as [`Symbol::as_ref`].
+    pub unsafe fn as_ref(&self) -> &T {
+        // SAFETY: forwarded to the caller; `self.lib` keeps the data alive.
+        unsafe { &*self.inner }
     }
 }
 

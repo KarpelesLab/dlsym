@@ -22,12 +22,14 @@ assert_eq!(unsafe { cos.call((0.0,)) }, 1.0);
 // Whole APIs: a struct that owns the library and every resolved function.
 dlsym::library! {
     pub struct LibM {
-        pub fn sqrt(x: f64) -> f64;
-        pub fn pow(x: f64, y: f64) -> f64;
+        unsafe extern "C" {
+            pub safe fn sqrt(x: f64) -> f64;
+            pub fn frexp(x: f64, exp: *mut i32) -> f64;
+        }
     }
 }
 let m = unsafe { LibM::open("libm.so.6")? };
-assert_eq!(unsafe { m.pow(2.0, 10.0) }, 1024.0);
+assert_eq!(m.sqrt(16.0), 4.0);
 ```
 
 ## Compared to libloading
