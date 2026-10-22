@@ -121,5 +121,5 @@ The step from *bindings* to *safe bindings*:
 
 - [x] release-plz: versioning, changelog and crates.io publishing on
       `master`, with prebuilt `dlsym-gen` binaries attached to each release
-- [ ] Examples (`examples/`) for each feature
+- [x] Examples: `symbols` (borrowed symbols, variadics) and `bindings` (`library!`)
 - [ ] 0.1.0 once the safety layer's shape is settled (0.0.x until then)
