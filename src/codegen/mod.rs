@@ -5,12 +5,14 @@
 //!
 //! The pipeline has three stages:
 //!
-//! 1. [`parse`]: a C front end turns headers into the [`ir`].
+//! 1. [`parse`]: a C front end, built on libclang loaded at run time (no
+//!    LLVM needed at build time), turns headers into the [`ir`].
 //! 2. [`ir`]: a small, language-neutral model of the declarations a header
 //!    exposes (functions, types, constants).
 //! 3. [`emit`]: turns the IR into Rust source built on
 //!    [`library!`](crate::library!).
 
+mod clang;
 pub mod emit;
 pub mod ir;
 pub mod parse;

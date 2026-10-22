@@ -1,59 +1,128 @@
-//! `dlsym-gen`: generate safe `dlsym` bindings from a C header.
+//! `dlsym-gen`: generate runtime-loaded `dlsym` bindings from C headers.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use dlsym::codegen::{emit, parse};
 
 const USAGE: &str = "\
-usage: dlsym-gen [options] <header.h> [-- <clang args>...]
+usage: dlsym-gen [options] <header.h>... [-- <clang args>...]
 
-options:
-    -s, --struct <Name>   name of the generated bindings struct (default: Bindings)
-    -o, --output <file>   write to <file> instead of stdout
-    -h, --help            show this help
+Generates Rust bindings that load a C library at run time with dlsym.
+
+Output:
+  -o, --output <file>       write the bindings module to <file> (default: stdout)
+      --crate <dir>         write a crate to <dir>: Cargo.toml and src/lib.rs
+                            (only if missing) and src/bindings.rs (always)
+      --crate-name <name>   package name for --crate (default: the directory name)
+
+Bindings:
+  -s, --struct <Name>       name of the generated struct (default: from the
+                            first header, e.g. zlib.h -> Zlib)
+  -l, --lib <file>          library file name tried by the generated
+                            `open_default` (repeatable, e.g. -l libz.so.1)
+      --optional <glob>     mark matching functions and variables #[optional]
+                            (repeatable)
+
+Selection (declarations from the headers and the files they #include \"...\"):
+      --header-dir <dir>    also bind declarations from headers under <dir>
+      --allow <glob>        only bind items whose C name matches (repeatable)
+      --block <glob>        never bind items whose C name matches (repeatable)
+
+Clang:
+      --libclang <path>     libclang to use (default: $LIBCLANG_PATH,
+                            llvm-config, then well-known locations)
+      --keep-going          generate even if clang reports errors
+  -q, --quiet               do not print warnings
+  -h, --help                show this help
+  -V, --version             show the version
 ";
 
+#[derive(Default)]
 struct Args {
-    header: PathBuf,
-    struct_name: String,
+    headers: Vec<PathBuf>,
     output: Option<PathBuf>,
-    clang_args: Vec<String>,
+    crate_dir: Option<PathBuf>,
+    crate_name: Option<String>,
+    struct_name: Option<String>,
+    libs: Vec<String>,
+    parse: parse::Options,
+    optional: Vec<String>,
+    quiet: bool,
 }
 
-fn parse_args() -> Result<Option<Args>, String> {
-    let mut args = std::env::args().skip(1);
-    let mut header = None;
-    let mut struct_name = "Bindings".to_owned();
-    let mut output = None;
-    let mut clang_args = Vec::new();
+enum Command {
+    Run(Box<Args>),
+    Help,
+    Version,
+}
 
-    while let Some(arg) = args.next() {
+fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
+    let mut a = Args::default();
+    while let Some(arg) = it.next() {
+        let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
-            "-h" | "--help" => return Ok(None),
-            "-s" | "--struct" => struct_name = args.next().ok_or("--struct needs a value")?,
-            "-o" | "--output" => output = Some(args.next().ok_or("--output needs a value")?.into()),
-            "--" => clang_args.extend(args.by_ref()),
-            a if a.starts_with('-') => return Err(format!("unknown option {a}")),
-            a if header.is_none() => header = Some(PathBuf::from(a)),
-            a => return Err(format!("unexpected argument {a}")),
+            "-h" | "--help" => return Ok(Command::Help),
+            "-V" | "--version" => return Ok(Command::Version),
+            "-o" | "--output" => a.output = Some(value(&arg)?.into()),
+            "--crate" => a.crate_dir = Some(value(&arg)?.into()),
+            "--crate-name" => a.crate_name = Some(value(&arg)?),
+            "-s" | "--struct" => a.struct_name = Some(value(&arg)?),
+            "-l" | "--lib" => a.libs.push(value(&arg)?),
+            "--optional" => a.optional.push(value(&arg)?),
+            "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
+            "--allow" => a.parse.allow.push(value(&arg)?),
+            "--block" => a.parse.block.push(value(&arg)?),
+            "--libclang" => a.parse.libclang = Some(value(&arg)?.into()),
+            "--keep-going" => a.parse.keep_going = true,
+            "-q" | "--quiet" => a.quiet = true,
+            "--" => a.parse.clang_args.extend(it.by_ref()),
+            s if s.starts_with('-') => return Err(format!("unknown option {s}")),
+            s => a.headers.push(s.into()),
         }
     }
+    if a.headers.is_empty() {
+        return Err("missing header path".into());
+    }
+    if a.output.is_some() && a.crate_dir.is_some() {
+        return Err("--output and --crate are mutually exclusive".into());
+    }
+    a.parse.headers = a.headers.clone();
+    Ok(Command::Run(Box::new(a)))
+}
 
-    let header = header.ok_or("missing header path")?;
-    Ok(Some(Args {
-        header,
-        struct_name,
-        output,
-        clang_args,
-    }))
+/// `zlib.h` -> `Zlib`, `foo-bar_baz.h` -> `FooBarBaz`.
+fn struct_name_for(header: &Path) -> String {
+    let stem = header
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bindings");
+    let mut out = String::new();
+    for part in stem
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|p| !p.is_empty())
+    {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.extend(chars);
+        }
+    }
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert_str(0, "Lib");
+    }
+    out
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args() {
-        Ok(Some(args)) => args,
-        Ok(None) => {
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(Command::Run(a)) => a,
+        Ok(Command::Help) => {
             print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Command::Version) => {
+            println!("dlsym-gen {}", env!("CARGO_PKG_VERSION"));
             return ExitCode::SUCCESS;
         }
         Err(e) => {
@@ -61,32 +130,163 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-
-    let header = match parse::parse_header(&args.header, &args.clang_args) {
-        Ok(h) => h,
+    match run(&args) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("dlsym-gen: {}: {e}", args.header.display());
-            return ExitCode::FAILURE;
+            eprintln!("dlsym-gen: {e}");
+            ExitCode::FAILURE
         }
-    };
+    }
+}
 
+fn run(args: &Args) -> Result<(), String> {
+    let parsed = parse::parse(&args.parse).map_err(|e| e.to_string())?;
+    if !args.quiet {
+        for w in &parsed.warnings {
+            eprintln!("warning: {w}");
+        }
+    }
+    let struct_name = args
+        .struct_name
+        .clone()
+        .unwrap_or_else(|| struct_name_for(&args.headers[0]));
+    let headers: Vec<String> = args
+        .headers
+        .iter()
+        .map(|h| {
+            h.file_name()
+                .unwrap_or(h.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
     let code = emit::emit(
-        &header,
+        &parsed.header,
         &emit::Options {
-            struct_name: args.struct_name,
+            struct_name: struct_name.clone(),
+            library_names: args.libs.clone(),
+            optional: args.optional.clone(),
+            comment: vec![
+                format!("Source: {}", headers.join(", ")),
+                format!(
+                    "Generator: dlsym-gen {} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    parsed.clang_version
+                ),
+            ],
         },
     );
 
-    let result = match &args.output {
-        Some(path) => std::fs::write(path, code),
-        None => {
-            print!("{code}");
-            Ok(())
-        }
-    };
-    if let Err(e) = result {
-        eprintln!("dlsym-gen: failed to write output: {e}");
-        return ExitCode::FAILURE;
+    if let Some(dir) = &args.crate_dir {
+        write_crate(
+            dir,
+            args.crate_name.as_deref(),
+            &struct_name,
+            &headers,
+            &args.libs,
+            &code,
+        )
+    } else if let Some(path) = &args.output {
+        std::fs::write(path, code).map_err(|e| format!("{}: {e}", path.display()))
+    } else {
+        print!("{code}");
+        Ok(())
     }
-    ExitCode::SUCCESS
+}
+
+fn write_crate(
+    dir: &Path,
+    name: Option<&str>,
+    struct_name: &str,
+    headers: &[String],
+    libs: &[String],
+    code: &str,
+) -> Result<(), String> {
+    let io = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).map_err(|e| io(&src, e))?;
+    let name = match name {
+        Some(n) => n.to_owned(),
+        None => std::fs::canonicalize(dir)
+            .ok()
+            .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .ok_or("cannot derive a crate name; pass --crate-name")?,
+    };
+    let lib_name = name.replace('-', "_");
+
+    let manifest = dir.join("Cargo.toml");
+    if !manifest.exists() {
+        let text = format!(
+            "[package]\n\
+             name = \"{name}\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             description = \"Bindings to {headers}, loaded at run time\"\n\
+             \n\
+             [dependencies]\n\
+             dlsym = \"{version}\"\n",
+            headers = headers.join(", "),
+            version = env!("CARGO_PKG_VERSION"),
+        );
+        std::fs::write(&manifest, text).map_err(|e| io(&manifest, e))?;
+    }
+
+    let lib_rs = src.join("lib.rs");
+    if !lib_rs.exists() {
+        let open = if libs.is_empty() {
+            format!("{struct_name}::open(\"path/to/library\")")
+        } else {
+            format!("{struct_name}::open_default()")
+        };
+        let text = format!(
+            "//! Bindings to `{headers}`, loaded at run time with [`dlsym`].\n\
+             //!\n\
+             //! ```no_run\n\
+             //! use {lib_name}::{{Bindings, {struct_name}}};\n\
+             //!\n\
+             //! # fn main() -> dlsym::Result<()> {{\n\
+             //! // SAFETY: the library's initialisers are trusted.\n\
+             //! let lib = unsafe {{ {open} }}?;\n\
+             //! # let _ = lib;\n\
+             //! # Ok(())\n\
+             //! # }}\n\
+             //! ```\n\
+             \n\
+             mod bindings;\n\
+             \n\
+             pub use bindings::*;\n\
+             pub use dlsym::{{self, Bindings}};\n",
+            headers = headers.join("`, `"),
+        );
+        std::fs::write(&lib_rs, text).map_err(|e| io(&lib_rs, e))?;
+    }
+
+    let bindings = src.join("bindings.rs");
+    std::fs::write(&bindings, code).map_err(|e| io(&bindings, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn struct_names() {
+        assert_eq!(struct_name_for(Path::new("/usr/include/zlib.h")), "Zlib");
+        assert_eq!(struct_name_for(Path::new("foo-bar_baz.h")), "FooBarBaz");
+        assert_eq!(struct_name_for(Path::new("3d.h")), "Lib3d");
+    }
+
+    #[test]
+    fn args() {
+        let a = |v: &[&str]| parse_args(v.iter().map(|s| s.to_string()));
+        assert!(matches!(a(&["-h"]), Ok(Command::Help)));
+        assert!(a(&[]).is_err());
+        assert!(a(&["x.h", "-o", "a", "--crate", "b"]).is_err());
+        let Ok(Command::Run(r)) = a(&["x.h", "-l", "libx.so.1", "--", "-DFOO", "-I", "inc"]) else {
+            panic!()
+        };
+        assert_eq!(r.libs, ["libx.so.1"]);
+        assert_eq!(r.parse.clang_args, ["-DFOO", "-I", "inc"]);
+        assert_eq!(r.parse.headers, [PathBuf::from("x.h")]);
+    }
 }

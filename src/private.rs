@@ -135,3 +135,49 @@ pub const fn link_name(s: &'static str) -> &'static CStr {
 
 /// Fails to compile unless `T` is `Sync`.
 pub const fn assert_sync<T: ?Sized + Sync>() {}
+
+/// Reads a `width`-bit field starting `bit` bits into `storage`, as laid out
+/// by the C compiler for the target's byte order.
+pub fn bitfield_get(storage: &[u8], bit: u64, width: u32) -> u64 {
+    let mut value = 0u64;
+    for i in 0..u64::from(width) {
+        let b = bit + i;
+        if storage[(b / 8) as usize] & bit_mask(b) != 0 {
+            value |= 1 << value_bit(i, width);
+        }
+    }
+    value
+}
+
+/// Writes the low `width` bits of `value` into a bitfield; see
+/// [`bitfield_get`].
+pub fn bitfield_set(storage: &mut [u8], bit: u64, width: u32, value: u64) {
+    for i in 0..u64::from(width) {
+        let b = bit + i;
+        let byte = &mut storage[(b / 8) as usize];
+        if value & (1 << value_bit(i, width)) != 0 {
+            *byte |= bit_mask(b);
+        } else {
+            *byte &= !bit_mask(b);
+        }
+    }
+}
+
+/// Little-endian ABIs allocate bitfields from the least significant bit of
+/// each byte, big-endian ones from the most significant.
+const fn bit_mask(b: u64) -> u8 {
+    if cfg!(target_endian = "little") {
+        1 << (b % 8)
+    } else {
+        0x80 >> (b % 8)
+    }
+}
+
+/// Which bit of the value is stored `i` bits into the field.
+const fn value_bit(i: u64, width: u32) -> u64 {
+    if cfg!(target_endian = "little") {
+        i
+    } else {
+        width as u64 - 1 - i
+    }
+}

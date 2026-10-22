@@ -39,8 +39,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform.target }}
+      - name: Install libclang (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - name: Test
         shell: bash
+        env:
+          # The generator's end-to-end test must run, not skip, on 64-bit hosts.
+          DLSYM_REQUIRE_E2E: ${{ !matrix.platform.target && '1' || '' }}
+          # On Windows, build the test library with LLVM's clang (MSVC ABI).
+          CC: ${{ runner.os == 'Windows' && 'clang' || '' }}
         run: cargo test --locked --all-features ${{ matrix.platform.target && format('--target {0}', matrix.platform.target) || '' }}
 
   clippy:
