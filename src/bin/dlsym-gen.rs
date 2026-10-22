@@ -36,6 +36,8 @@ Selection (declarations from the headers and the files they #include \"...\"):
       --block <glob>        never bind items whose C name matches (repeatable)
 
 Clang:
+      --target <triple>     generate for this Rust target instead of the host
+                            (add --sysroot etc. after `--` as needed)
       --libclang <path>     libclang to use (default: $LIBCLANG_PATH,
                             llvm-config, then well-known locations)
       --keep-going          generate even if clang reports errors
@@ -84,6 +86,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "--allow" => a.parse.allow.push(value(&arg)?),
             "--block" => a.parse.block.push(value(&arg)?),
             "--libclang" => a.parse.libclang = Some(value(&arg)?.into()),
+            "--target" => a.parse.target = Some(value(&arg)?),
             "--keep-going" => a.parse.keep_going = true,
             "-q" | "--quiet" => a.quiet = true,
             "--" => a.parse.clang_args.extend(it.by_ref()),
@@ -190,6 +193,10 @@ fn run(args: &Args) -> Result<(), String> {
                     "Generator: dlsym-gen {} ({})",
                     env!("CARGO_PKG_VERSION"),
                     parsed.clang_version
+                ),
+                format!(
+                    "Target: {} (struct layouts are checked at compile time)",
+                    parsed.target.as_deref().unwrap_or("host")
                 ),
             ],
         },

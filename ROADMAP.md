@@ -76,14 +76,13 @@ or gate any new one to the binary.
 
 ### Loader
 
-- [ ] CI: more targets: Linux aarch64, macOS x86_64, windows-gnu, FreeBSD
-      (via a VM action). musl only makes sense dynamically linked:
-      statically linked musl binaries cannot `dlopen`
-- [ ] `dladdr` / `dlinfo`: find the path of a loaded library or symbol
-- [ ] Unload safety docs: TLS destructors, `atexit` handlers and threads
-      started by a library are unsound to unload (`leak` / `no_delete`)
-- [ ] Document thread-local (`__thread`) data symbol caveats
-- [ ] Audit `dlerror` thread-safety on every supported Unix
+- [x] CI: Linux aarch64, macOS x86_64, windows-gnu, FreeBSD (VM)
+- [ ] CI: musl (dynamically linked only: statically linked musl binaries
+      cannot `dlopen`)
+- [x] `Library::path`, `AddressInfo::of`, `Symbol::info` (`dlinfo`, dyld,
+      `dladdr`, `GetModuleFileNameW`)
+- [x] Platform notes: unload safety, thread-local data symbols, `dlerror`
+      thread-safety, lazy binding
 - [ ] **Open question:** should `get` be safe? Every use of a sealed symbol
       type already requires `unsafe`, so its safety contract could move
       there.
@@ -98,10 +97,10 @@ or gate any new one to the binary.
 ### Generator
 
 - [ ] Big-endian bitfield layouts are implemented but untested
-- [ ] Function-like macros that wrap a single call (e.g. zlib's
+- [x] Function-like macros that wrap a single call (e.g. zlib's
       `deflateInit`) as helper methods
-- [ ] Cross-generation: map `--target` to clang's target triple, and record
-      it in the output
+- [x] Cross-generation: `--target` (mapped to clang's triple), recorded in
+      the output; layout assertions reject bindings built for another target
 - [ ] Generate for several targets and merge them with `#[cfg]`
 
 ### Safety layer

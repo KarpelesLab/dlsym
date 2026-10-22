@@ -95,6 +95,12 @@ crate::library! {
             fn clang_defaultDiagnosticDisplayOptions() -> c_uint;
             fn clang_disposeDiagnostic(diagnostic: CXDiagnostic);
             fn clang_getTranslationUnitCursor(tu: CXTranslationUnit) -> CXCursor;
+            #[optional]
+            fn clang_getTranslationUnitTargetInfo(tu: CXTranslationUnit) -> *mut c_void;
+            #[optional]
+            fn clang_TargetInfo_getTriple(info: *mut c_void) -> CXString;
+            #[optional]
+            fn clang_TargetInfo_dispose(info: *mut c_void);
             fn clang_visitChildren(parent: CXCursor, visitor: CXVisitor, data: *mut c_void) -> c_uint;
             fn clang_getCString(s: CXString) -> *const c_char;
             fn clang_disposeString(s: CXString);
@@ -512,6 +518,21 @@ impl<'a> Tu<'a> {
                     Diagnostic { is_error, message }
                 })
                 .collect()
+        }
+    }
+
+    /// The target triple clang parsed for, if libclang can tell.
+    pub(crate) fn target_triple(&self) -> Option<String> {
+        let lib = self.lib;
+        // SAFETY: the TU is live; the target info is disposed once.
+        unsafe {
+            let info = lib.clang_getTranslationUnitTargetInfo(self.tu)?;
+            if info.is_null() {
+                return None;
+            }
+            let triple = lib.clang_TargetInfo_getTriple(info).map(|s| take(lib, s));
+            lib.clang_TargetInfo_dispose(info);
+            triple
         }
     }
 

@@ -123,6 +123,12 @@ impl Builder {
         self
     }
 
+    /// Generates for this Rust target triple instead of the host.
+    pub fn target(mut self, triple: impl Into<String>) -> Self {
+        self.parse.target = Some(triple.into());
+        self
+    }
+
     /// Generates bindings even if clang reports errors.
     pub fn keep_going(mut self, keep_going: bool) -> Self {
         self.parse.keep_going = keep_going;
@@ -174,6 +180,10 @@ impl Builder {
             "Generator: dlsym {} ({})",
             env!("CARGO_PKG_VERSION"),
             parsed.clang_version
+        ));
+        emit.comment.push(format!(
+            "Target: {} (struct layouts are checked at compile time)",
+            parsed.target.as_deref().unwrap_or("host")
         ));
         Ok(Generated {
             code: emit::emit(&parsed.header, &emit),

@@ -38,6 +38,10 @@ pub struct Options {
     pub libclang: Option<PathBuf>,
     /// Generate bindings even if clang reports errors.
     pub keep_going: bool,
+    /// Generate for this Rust target triple instead of the host (passed to
+    /// clang as `--target`; add `--sysroot` etc. to
+    /// [`clang_args`](Options::clang_args) as needed).
+    pub target: Option<String>,
 }
 
 /// The result of [`parse`].
@@ -49,6 +53,8 @@ pub struct Parsed {
     pub warnings: Vec<String>,
     /// The libclang version used.
     pub clang_version: String,
+    /// The target triple clang parsed for (layouts are only valid there).
+    pub target: Option<String>,
 }
 
 /// Errors produced while parsing headers.
@@ -103,7 +109,11 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
         umbrella.push_str(&format!("#include \"{text}\"\n"));
         inputs.insert(abs.to_string_lossy().into_owned());
     }
-    let args = clang_args(&opts.clang_args);
+    let mut user_args = opts.clang_args.clone();
+    if let Some(t) = &opts.target {
+        user_args.insert(0, format!("--target={}", clang_triple(t)));
+    }
+    let args = clang_args(&user_args);
 
     let tu = Tu::parse(
         lib,
@@ -127,6 +137,7 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     }
     warnings.extend(errors);
 
+    let target = tu.target_triple();
     let mut ctx = Ctx::new(&tu, opts, inputs);
     ctx.warnings = warnings;
     let top = ctx.top_level();
@@ -141,6 +152,7 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
         header,
         warnings: ctx.warnings,
         clang_version,
+        target,
     })
 }
 
@@ -159,6 +171,19 @@ fn clang_args(user: &[String]) -> Vec<String> {
     }
     args.extend(user.iter().cloned());
     args
+}
+
+/// Maps a Rust target triple to clang's spelling where they differ.
+fn clang_triple(rust: &str) -> String {
+    let mut parts: Vec<&str> = rust.split('-').collect();
+    let arch = match parts.first().copied() {
+        Some(a) if a.starts_with("riscv64") => "riscv64",
+        Some(a) if a.starts_with("riscv32") => "riscv32",
+        Some(a) => a,
+        None => return rust.to_owned(),
+    };
+    parts[0] = arch;
+    parts.join("-")
 }
 
 /// Matches `name` against a glob with `*` and `?`.
@@ -1393,6 +1418,15 @@ mod tests {
         assert_eq!(parse_c_int("0x10UL"), Some(16));
         assert_eq!(parse_c_int("017"), Some(15));
         assert_eq!(parse_c_int("0"), Some(0));
+    }
+
+    #[test]
+    fn triples() {
+        assert_eq!(
+            clang_triple("riscv64gc-unknown-linux-gnu"),
+            "riscv64-unknown-linux-gnu"
+        );
+        assert_eq!(clang_triple("aarch64-apple-darwin"), "aarch64-apple-darwin");
     }
 
     #[test]
