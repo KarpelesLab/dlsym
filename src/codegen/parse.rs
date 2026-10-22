@@ -2,8 +2,9 @@
 //! time through this crate's own [`library!`](crate::library).
 //!
 //! Declarations are *selected* when they come from one of the input headers,
-//! from a header those include with `#include "..."`, or from a file under
-//! one of [`Options::header_dirs`]. Selected functions, variables, types and
+//! from a header those include with `#include "..."` (or with
+//! `#include <...>` when it stays in the library's own directory tree), or
+//! from a file under one of [`Options::header_dirs`]. Selected functions, variables, types and
 //! `#define` constants are emitted; types they reference from elsewhere
 //! (system headers, other libraries) are pulled in as needed: in full when
 //! used by value, as opaque types when only used behind pointers.
@@ -220,6 +221,8 @@ struct Ctx<'tu, 'o> {
     tu: &'tu Tu<'tu>,
     opts: &'o Options,
     selected: HashSet<String>,
+    /// File stems of the input headers (`pcap` for `pcap.h`).
+    input_stems: Vec<String>,
     header_dirs: Vec<PathBuf>,
     canon: HashMap<String, String>,
     file_rank: HashMap<String, usize>,
@@ -247,6 +250,11 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             tu,
             opts,
             selected: inputs,
+            input_stems: opts
+                .headers
+                .iter()
+                .filter_map(|h| h.file_stem()?.to_str().map(str::to_owned))
+                .collect(),
             header_dirs: opts
                 .header_dirs
                 .iter()
@@ -334,16 +342,42 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             if !self.selected.contains(&from) {
                 continue;
             }
+            let Some(file) = c.included_file() else {
+                continue;
+            };
+            let file = self.canonical_file(&file);
             let quoted = self
                 .tu
                 .tokens(c)
                 .iter()
                 .any(|(literal, s)| *literal && s.starts_with('"'));
-            if quoted && let Some(file) = c.included_file() {
-                let file = self.canonical_file(&file);
+            if quoted || self.same_library(Path::new(&from), Path::new(&file)) {
                 self.selected.insert(file);
             }
         }
+    }
+
+    /// Whether an `#include <...>` from `from` stays within the same
+    /// library: the included file is in `from`'s directory tree, and that
+    /// directory is not a system include root (then only a subdirectory
+    /// named after an input header counts, e.g. `pcap.h` -> `<pcap/...>`).
+    fn same_library(&self, from: &Path, file: &Path) -> bool {
+        let Some(dir) = from.parent() else {
+            return false;
+        };
+        if !file.starts_with(dir) {
+            return false;
+        }
+        let is_root = ["stdio.h", "stddef.h", "stdlib.h"]
+            .iter()
+            .any(|h| dir.join(h).exists());
+        !is_root
+            || self.input_stems.iter().any(|stem| {
+                file.strip_prefix(dir)
+                    .ok()
+                    .and_then(|rest| rest.components().next())
+                    .is_some_and(|first| first.as_os_str() == stem.as_str())
+            })
     }
 
     /// Assigns names to anonymous tags declared through a typedef, and

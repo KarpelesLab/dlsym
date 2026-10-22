@@ -45,28 +45,6 @@ fn demo_library() {
     let Some(cc) = compiler() else {
         return skip("no C compiler found");
     };
-    let generated = match Builder::new()
-        .header(fixtures().join("demo.h"))
-        .struct_name("Demo")
-        .safe("demo_add")
-        .safe("demo_is_even")
-        .optional("demo_not_*")
-        .generate()
-    {
-        Ok(g) => g,
-        Err(parse::Error::LibClang(e)) => return skip(&e),
-        Err(e) => panic!("{e}"),
-    };
-    assert!(
-        generated
-            .warnings
-            .iter()
-            .any(|w| w.contains("demo_long_double")),
-        "{:?}",
-        generated.warnings
-    );
-    let code = generated.code;
-
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-demo");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(work.join("src")).unwrap();
@@ -89,6 +67,37 @@ fn demo_library() {
         .status()
         .expect("run C compiler");
     assert!(status.success(), "C compiler failed");
+
+    let generated = match Builder::new()
+        .header(fixtures().join("demo.h"))
+        .struct_name("Demo")
+        .safe("demo_add")
+        .safe("demo_is_even")
+        // Probing the built library marks `demo_not_implemented` optional.
+        .library_name(lib.to_str().unwrap())
+        .generate()
+    {
+        Ok(g) => g,
+        Err(parse::Error::LibClang(e)) => return skip(&e),
+        Err(e) => panic!("{e}"),
+    };
+    assert!(
+        generated
+            .warnings
+            .iter()
+            .any(|w| w.contains("demo_long_double")),
+        "{:?}",
+        generated.warnings
+    );
+    assert!(
+        generated
+            .warnings
+            .iter()
+            .any(|w| w.contains("`demo_not_implemented` is not exported")),
+        "{:?}",
+        generated.warnings
+    );
+    let code = generated.code;
 
     // Check the generated code, then build a crate around it.
     for needle in [

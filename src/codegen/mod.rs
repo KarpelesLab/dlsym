@@ -50,6 +50,7 @@ pub mod parse;
 pub struct Builder {
     parse: parse::Options,
     emit: emit::Options,
+    probe: bool,
 }
 
 /// Generated bindings.
@@ -75,7 +76,15 @@ impl Builder {
         let mut b = Self::default();
         b.emit.struct_name = "Bindings".into();
         b.emit.no_module_attributes = true;
+        b.probe = true;
         b
+    }
+
+    /// Whether to [`probe`] the library named by
+    /// [`library_name`](Builder::library_name) (default: yes).
+    pub fn probe(mut self, probe: bool) -> Self {
+        self.probe = probe;
+        self
     }
 
     /// Adds a header to parse.
@@ -154,8 +163,13 @@ impl Builder {
 
     /// Parses the headers and generates the bindings.
     pub fn generate(&self) -> Result<Generated, parse::Error> {
-        let parsed = parse::parse(&self.parse)?;
+        let mut parsed = parse::parse(&self.parse)?;
         let mut emit = self.emit.clone();
+        if self.probe {
+            let (_, missing, warnings) = probe(&parsed.header, &emit.library_names);
+            parsed.warnings.extend(warnings);
+            emit.optional.extend(missing);
+        }
         emit.comment.push(format!(
             "Generator: dlsym {} ({})",
             env!("CARGO_PKG_VERSION"),
@@ -166,4 +180,43 @@ impl Builder {
             warnings: parsed.warnings,
         })
     }
+}
+
+/// Opens the first loadable library in `names` and checks which functions
+/// and variables of `header` it does not export.
+///
+/// Headers often declare functions that only some builds of a library
+/// provide (platform-specific or optional features). Marking those
+/// `#[optional]` keeps the generated bindings loadable everywhere.
+///
+/// Returns the library that was opened (if any), the missing symbol names,
+/// and a warning for each. The library is kept loaded for the rest of the
+/// process, since some libraries are not safe to unload.
+pub fn probe(header: &ir::Header, names: &[String]) -> (Option<String>, Vec<String>, Vec<String>) {
+    let mut missing = Vec::new();
+    let mut warnings = Vec::new();
+    let Some((name, lib)) = names.iter().find_map(|n| {
+        // SAFETY: the user named this library as the one being bound.
+        unsafe { crate::Library::open(n) }
+            .ok()
+            .map(|l| (n.clone(), l.leak()))
+    }) else {
+        return (None, missing, warnings);
+    };
+    for item in &header.items {
+        let symbol = match item {
+            ir::Item::Function(f) => &f.name,
+            ir::Item::Var(v) => &v.name,
+            _ => continue,
+        };
+        // SAFETY: only the address is looked up; nothing is called.
+        let found = unsafe { lib.get::<*const u8>(symbol.as_str()) };
+        if let Err(crate::Error::SymbolNotFound { .. }) = found {
+            warnings.push(format!(
+                "`{symbol}` is not exported by {name}; marked #[optional]"
+            ));
+            missing.push(symbol.clone());
+        }
+    }
+    (Some(name), missing, warnings)
 }

@@ -20,7 +20,10 @@ Bindings:
   -s, --struct <Name>       name of the generated struct (default: from the
                             first header, e.g. zlib.h -> Zlib)
   -l, --lib <file>          library file name tried by the generated
-                            `open_default` (repeatable, e.g. -l libz.so.1)
+                            `open_default` (repeatable, e.g. -l libz.so.1).
+                            The first one that loads is also probed: symbols
+                            it does not export become #[optional]
+      --no-probe            do not open the library to probe its symbols
       --optional <glob>     mark matching functions and variables #[optional]
                             (repeatable)
       --safe <glob>         declare matching functions `safe fn` (callable
@@ -52,6 +55,7 @@ struct Args {
     parse: parse::Options,
     optional: Vec<String>,
     safe: Vec<String>,
+    no_probe: bool,
     quiet: bool,
 }
 
@@ -75,6 +79,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "-l" | "--lib" => a.libs.push(value(&arg)?),
             "--optional" => a.optional.push(value(&arg)?),
             "--safe" => a.safe.push(value(&arg)?),
+            "--no-probe" => a.no_probe = true,
             "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
             "--allow" => a.parse.allow.push(value(&arg)?),
             "--block" => a.parse.block.push(value(&arg)?),
@@ -145,7 +150,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args) -> Result<(), String> {
-    let parsed = parse::parse(&args.parse).map_err(|e| e.to_string())?;
+    let mut parsed = parse::parse(&args.parse).map_err(|e| e.to_string())?;
+    let mut optional = args.optional.clone();
+    if !args.no_probe {
+        let (_, missing, warnings) = dlsym::codegen::probe(&parsed.header, &args.libs);
+        parsed.warnings.extend(warnings);
+        optional.extend(missing);
+    }
     if !args.quiet {
         for w in &parsed.warnings {
             eprintln!("warning: {w}");
@@ -170,7 +181,7 @@ fn run(args: &Args) -> Result<(), String> {
         &emit::Options {
             struct_name: struct_name.clone(),
             library_names: args.libs.clone(),
-            optional: args.optional.clone(),
+            optional,
             safe: args.safe.clone(),
             no_module_attributes: false,
             comment: vec![

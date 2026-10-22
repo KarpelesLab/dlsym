@@ -124,9 +124,21 @@ What it handles:
   with `#include "..."` (`--header-dir` adds more). Types from elsewhere are
   pulled in as needed: in full when used by value, opaque when only used
   behind pointers.
-- `--allow`/`--block` filter by name, `--optional` marks symbols that may be
-  missing, and `--safe` declares functions callable without `unsafe`.
-  Unsupported items (e.g. `long double`) are skipped with a warning.
+- Headers often declare functions that only some builds of a library export
+  (sqlite's Windows-only functions, optional features). With `-l`, the
+  generator opens the installed library and marks whatever it lacks
+  `#[optional]`, so the bindings still load; calling such a function returns
+  `None`.
+- `--allow`/`--block` filter by name, `--optional` marks more symbols that
+  may be missing, and `--safe` declares functions callable without
+  `unsafe`. Unsupported items (e.g. `long double`) are skipped with a
+  warning.
+- Tested on zlib, sqlite3, curl, libpng, xz, bzip2, zstd, expat, libarchive,
+  libmagic, ogg, opus, libsodium, libuv, libyaml, lz4, pcre2, SDL2, Xlib,
+  OpenGL, EGL, Vulkan, OpenSSL, libxml2, GLib, D-Bus, cairo, FreeType, ALSA,
+  PulseAudio, ncurses, readline, libpcap, libusb, libudev, libevent,
+  libjpeg, libtiff, libwebp, fontconfig, gdbm and libuuid: every generated
+  module compiles.
 
 From a `build.rs`, use `dlsym::codegen::Builder` (see the
 [`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).
