@@ -154,3 +154,23 @@ fn libc_library() -> Library {
     #[cfg(windows)]
     return unsafe { Library::open("msvcrt.dll") }.unwrap();
 }
+
+// 32-bit x86 calling conventions, as generated for Windows APIs and C++
+// member functions. Only checked to compile.
+#[cfg(target_arch = "x86")]
+dlsym::library! {
+    pub struct X86Conventions {
+        unsafe extern "stdcall" {
+            #[optional]
+            pub fn dlsym_missing_stdcall(x: c_int) -> c_int;
+        }
+        unsafe extern "fastcall" {
+            #[optional]
+            pub fn dlsym_missing_fastcall(x: c_int) -> c_int;
+        }
+        unsafe extern "thiscall-unwind" {
+            #[optional]
+            pub fn dlsym_missing_thiscall(this: *mut c_char, x: c_int) -> c_int;
+        }
+    }
+}

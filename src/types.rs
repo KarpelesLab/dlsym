@@ -9,8 +9,10 @@ mod sealed {
 /// This trait is sealed. It is implemented for:
 ///
 /// - `unsafe extern "C" fn(..) -> R` (and the `"system"`, `"C-unwind"` and
-///   `"system-unwind"` ABIs) with up to 12 arguments. Null addresses are
-///   rejected with [`Error::NullSymbol`](crate::Error::NullSymbol).
+///   `"system-unwind"` ABIs; on 32-bit x86 also `"stdcall"`, `"fastcall"`
+///   and `"thiscall"` and their `-unwind` variants) with up to 12
+///   arguments. Null addresses are rejected with
+///   [`Error::NullSymbol`](crate::Error::NullSymbol).
 /// - Variadic `unsafe extern "C" fn(A, ...) -> R` (and `"C-unwind"`) with
 ///   1 to 6 fixed arguments. These implement [`SymbolType`] but not
 ///   [`FnPtr`]: Rust cannot forward a variable argument list, so they are
@@ -121,6 +123,18 @@ macro_rules! impl_fn_all_abis {
         impl_fn!("C-unwind"; $($ty $val),*);
         impl_fn!("system"; $($ty $val),*);
         impl_fn!("system-unwind"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("stdcall"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("stdcall-unwind"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("fastcall"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("fastcall-unwind"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("thiscall"; $($ty $val),*);
+        #[cfg(target_arch = "x86")]
+        impl_fn!("thiscall-unwind"; $($ty $val),*);
     };
 }
 

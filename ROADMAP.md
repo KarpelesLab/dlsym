@@ -121,9 +121,14 @@ information to generate checked bindings).
       parameter types, references as pointers, `C-unwind` unless
       `noexcept`, `enum class`, template specialization names; non-trivial
       types are opaque and never passed by value; inline functions skipped
-- [ ] Non-virtual member functions (`this` first; `thiscall` on 32-bit
-      Windows), connected to `--owned` handles
-- [ ] Constructors/destructors for classes whose layout is checked
+- [x] Non-virtual member functions (`this` first, `*const` for `const`
+      methods; `thiscall` on 32-bit Windows, now supported by the loader
+      along with `stdcall` and `fastcall`)
+- [x] Constructors (complete-object, except copy/move and abstract classes)
+      and destructors; classes with both get an RAII wrapper that allocates
+      the object, constructs it in place, never moves it, and destroys and
+      frees it on drop; methods become wrapper methods
+- [ ] Virtual functions (through the vtable, not the symbol)
 - [ ] Trivially copyable template specializations by value (libclang does
       not list their implicitly instantiated members, so all non-POD
       specializations are currently treated as non-trivial)

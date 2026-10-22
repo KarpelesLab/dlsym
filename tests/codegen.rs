@@ -197,6 +197,7 @@ fn cpp_library() {
     let generated = match Builder::new()
         .header(fixtures.join("cpp.hpp"))
         .struct_name("Cpp")
+        .safe_handle("geo_Counter_get")
         .library_name(lib.to_str().unwrap())
         .generate()
     {
@@ -222,17 +223,16 @@ fn cpp_library() {
         "pub const geo_shape_square: geo_shape",
         // Private members are laid out but not `pub`.
         "pub struct geo_Registry {\n    v: ::core::ffi::c_int,",
-        // Non-trivial classes are opaque.
-        "pub struct geo_Name {\n    _private: [u8; 0],",
+        // Non-trivial classes keep their size, not their fields.
+        "#[derive(Debug)]\npub struct geo_Name {\n    _opaque: [u8; 8],",
+        "pub struct GeoCounter<'lib> {",
+        "pub fn get(&self) -> ::core::ffi::c_int {",
+        "pub unsafe fn add_int(&mut self, n: ::core::ffi::c_int)",
+        "pub fn geo_Registry_value(this: *const geo_Registry)",
     ] {
         assert!(code.contains(needle), "missing {needle:?} in\n{code}");
     }
-    for absent in [
-        "secret",
-        "fn geo_Registry_value",
-        "make_name",
-        "fn geo_Registry_Registry",
-    ] {
+    for absent in ["secret", "make_name", "fn geo_Registry_Registry"] {
         assert!(
             !code.contains(absent),
             "{absent:?} must not be bound:\n{code}"

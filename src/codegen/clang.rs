@@ -116,6 +116,9 @@ crate::library! {
             fn clang_getCXXAccessSpecifier(cursor: CXCursor) -> c_int;
             fn clang_CXXMethod_isStatic(cursor: CXCursor) -> c_uint;
             fn clang_CXXMethod_isVirtual(cursor: CXCursor) -> c_uint;
+            fn clang_CXXMethod_isConst(cursor: CXCursor) -> c_uint;
+            #[optional]
+            fn clang_CXXRecord_isAbstract(cursor: CXCursor) -> c_uint;
             fn clang_CXXConstructor_isCopyConstructor(cursor: CXCursor) -> c_uint;
             fn clang_CXXConstructor_isMoveConstructor(cursor: CXCursor) -> c_uint;
             #[optional]
@@ -779,6 +782,18 @@ impl<'tu> Cursor<'tu> {
     pub(crate) fn is_virtual_method(self) -> bool {
         // SAFETY: see `kind`.
         unsafe { self.lib.clang_CXXMethod_isVirtual(self.raw) != 0 }
+    }
+
+    pub(crate) fn is_const_method(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_CXXMethod_isConst(self.raw) != 0 }
+    }
+
+    /// Whether this is an abstract class (`true` if libclang cannot tell,
+    /// so that nothing tries to construct it).
+    pub(crate) fn is_abstract(self) -> bool {
+        // SAFETY: see `kind`.
+        unsafe { self.lib.clang_CXXRecord_isAbstract(self.raw) }.is_none_or(|v| v != 0)
     }
 
     /// Whether this is a copy or move constructor.

@@ -201,3 +201,60 @@ const fn value_bit(i: u64, width: u32) -> u64 {
         width as u64 - 1 - i
     }
 }
+
+/// Heap storage for one C++ object of type `T`, as used by generated
+/// object wrappers: the constructor runs in it, and the storage is freed
+/// when this is dropped (e.g. if the constructor unwinds) unless
+/// [`into_raw`](Self::into_raw) took it over.
+pub struct ObjectStorage<T> {
+    ptr: *mut T,
+}
+
+impl<T> ObjectStorage<T> {
+    /// Allocates uninitialized storage.
+    ///
+    /// # Panics
+    ///
+    /// If `T` is zero-sized (C++ objects never are).
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        let layout = std::alloc::Layout::new::<T>();
+        assert!(layout.size() != 0, "C++ objects are never zero-sized");
+        // SAFETY: the layout has a non-zero size.
+        let ptr = unsafe { std::alloc::alloc(layout) }.cast::<T>();
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        ObjectStorage { ptr }
+    }
+
+    /// The storage's address.
+    pub fn as_ptr(&self) -> *mut T {
+        self.ptr
+    }
+
+    /// Takes over the storage, to be released with [`free`](Self::free).
+    pub fn into_raw(self) -> *mut T {
+        let ptr = self.ptr;
+        std::mem::forget(self);
+        ptr
+    }
+
+    /// Releases storage returned by [`into_raw`](Self::into_raw) (whose
+    /// object must already be destroyed).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must come from `into_raw` and not have been freed.
+    pub unsafe fn free(ptr: *mut T) {
+        // SAFETY: `ptr` was allocated by `new` with this layout.
+        unsafe { std::alloc::dealloc(ptr.cast(), std::alloc::Layout::new::<T>()) };
+    }
+}
+
+impl<T> Drop for ObjectStorage<T> {
+    fn drop(&mut self) {
+        // SAFETY: `self` still owns the allocation.
+        unsafe { Self::free(self.ptr) };
+    }
+}

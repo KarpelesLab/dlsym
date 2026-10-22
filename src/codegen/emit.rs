@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use super::ir::{
-    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, Record,
-    RecordBody, RecordKind, Type, Typedef, Var,
+    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, MemberKind,
+    Record, RecordBody, RecordKind, Type, Typedef, Var,
 };
 
 /// Options controlling code generation.
@@ -127,6 +127,7 @@ pub fn emit(header: &Header, opts: &Options) -> String {
     e.library(&functions, opts);
     e.macro_fns(header, opts);
     e.owned(header, opts);
+    e.objects(header, opts);
     e.out
 }
 
@@ -136,6 +137,8 @@ struct Emitter<'h> {
     enums: HashMap<&'h str, &'h Type>,
     typedefs: HashMap<&'h str, &'h Type>,
     unions: HashSet<&'h str>,
+    /// Names of generated wrapper types.
+    wrappers: HashSet<String>,
 }
 
 impl<'h> Emitter<'h> {
@@ -145,6 +148,7 @@ impl<'h> Emitter<'h> {
             enums: HashMap::new(),
             typedefs: HashMap::new(),
             unions: HashSet::new(),
+            wrappers: HashSet::new(),
         };
         for item in &header.items {
             match item {
@@ -273,6 +277,25 @@ impl<'h> Emitter<'h> {
         let name = ident(&r.name);
         self.out.push('\n');
         self.doc(r.doc.as_deref(), "");
+        if let (None, Some((size, align))) = (&r.body, r.opaque_layout) {
+            // A C++ class that is not trivially copyable: allocatable, but
+            // neither copyable nor movable once constructed, and its fields
+            // are private.
+            let _ = writeln!(
+                self.out,
+                "#[repr(C, align({align}))]\n\
+                 #[derive(Debug)]\n\
+                 pub struct {name} {{\n    \
+                     _opaque: [u8; {size}],\n    \
+                     _marker: ::core::marker::PhantomData<(*mut u8, ::core::marker::PhantomPinned)>,\n\
+                 }}\n\n\
+                 const _: () = {{\n    \
+                     assert!(::core::mem::size_of::<{name}>() == {size});\n    \
+                     assert!(::core::mem::align_of::<{name}>() == {align});\n\
+                 }};"
+            );
+            return;
+        }
         let Some(body) = &r.body else {
             let _ = writeln!(
                 self.out,
@@ -602,6 +625,7 @@ impl<'h> Emitter<'h> {
             while !taken.insert(wrapper.clone()) {
                 wrapper.push_str("Owned");
             }
+            self.wrappers.insert(wrapper.clone());
             let free_call = format!("self.lib.{}(self.raw)", ident(&free.name));
             let _ = writeln!(
                 self.out,
@@ -724,6 +748,151 @@ impl<'h> Emitter<'h> {
         }
     }
 
+    /// Emits RAII wrappers for C++ classes with a bound destructor and
+    /// constructors: the object is allocated by Rust, constructed in place,
+    /// never moved, and destroyed and freed when the wrapper is dropped.
+    fn objects(&mut self, header: &Header, opts: &Options) {
+        let lib = ident(&opts.struct_name);
+        let mut types: HashSet<String> = header
+            .items
+            .iter()
+            .filter_map(|i| i.type_name().map(str::to_owned))
+            .collect();
+        types.extend(self.wrappers.iter().cloned());
+        for item in &header.items {
+            let Item::Record(r) = item else { continue };
+            if r.opaque_layout.is_none() && r.body.is_none()
+                || opts.owned.iter().any(|o| o.type_name == r.name)
+            {
+                continue;
+            }
+            let members = |kind| {
+                header.items.iter().filter_map(move |i| match i {
+                    Item::Function(f)
+                        if f.member
+                            .as_ref()
+                            .is_some_and(|m| m.class == r.name && m.kind == kind)
+                            && !opts.optional.iter().any(|p| glob(p, &f.name)) =>
+                    {
+                        Some(f)
+                    }
+                    _ => None,
+                })
+            };
+            let Some(dtor) = members(MemberKind::Destructor).next() else {
+                continue;
+            };
+            let ctors: Vec<&Function> = members(MemberKind::Constructor).collect();
+            if ctors.is_empty() {
+                continue;
+            }
+            let ty = ident(&r.name);
+            let mut wrapper = camel_case(&r.name);
+            while !types.insert(wrapper.clone()) {
+                wrapper.push_str("Object");
+            }
+            self.wrappers.insert(wrapper.clone());
+            let mut ctor_fns = String::new();
+            let prefix = format!("{}_", r.name);
+            for f in &ctors {
+                let method = f.name.strip_prefix(&prefix).unwrap_or(&f.name);
+                let names: Vec<String> = f.params[1..]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        p.name
+                            .as_deref()
+                            .map_or_else(|| format!("arg{}", i + 1), ident)
+                    })
+                    .collect();
+                let params: String = names
+                    .iter()
+                    .zip(&f.params[1..])
+                    .map(|(n, p)| format!(", {n}: {}", rust_type(&p.ty)))
+                    .collect();
+                let args: String = names.iter().map(|n| format!(", {n}")).collect();
+                let safe = opts
+                    .safe
+                    .iter()
+                    .chain(&opts.safe_handle)
+                    .any(|p| glob(p, &f.name));
+                let (qual, safety_doc) = if safe {
+                    ("", "")
+                } else {
+                    (
+                        "unsafe ",
+                        "    ///\n    /// # Safety\n    ///\n    /// Same as calling the constructor.\n",
+                    )
+                };
+                let _ = writeln!(
+                    ctor_fns,
+                    "    /// Allocates and constructs an object with [`{0}`]({lib}::{0}).\n\
+                     {safety_doc}    \
+                     #[allow(clippy::too_many_arguments)]\n    \
+                     pub {qual}fn {1}(lib: &'lib {lib}{params}) -> Self {{\n        \
+                         let storage = ::dlsym::__private::ObjectStorage::<{ty}>::new();\n        \
+                         // SAFETY: `storage` is uninitialized memory for one object; if the\n        \
+                         // constructor unwinds, dropping `storage` frees it.\n        \
+                         unsafe {{ lib.{0}(storage.as_ptr(){args}) }};\n        \
+                         Self {{\n            \
+                             raw: storage.into_raw(),\n            \
+                             lib,\n        \
+                         }}\n    \
+                     }}\n",
+                    ident(&f.name),
+                    ident(method),
+                );
+            }
+            let _ = writeln!(
+                self.out,
+                "\n/// An owned [`{ty}`] object: allocated by Rust, constructed in place, and\n\
+                 /// destroyed with [`{dtor}`]({lib}::{dtor}) and freed when dropped.\n\
+                 ///\n\
+                 /// The object never moves (C++ objects may point to themselves), and it\n\
+                 /// borrows the [`{lib}`] it came from, so it cannot outlive the library.\n\
+                 pub struct {wrapper}<'lib> {{\n    \
+                     raw: *mut {ty},\n    \
+                     lib: &'lib {lib},\n\
+                 }}\n\n\
+                 impl<'lib> {wrapper}<'lib> {{\n\
+                 {ctor_fns}    \
+                     /// The object's address, valid while `self` lives.\n    \
+                     pub fn as_ptr(&self) -> *const {ty} {{\n        \
+                         self.raw\n    \
+                     }}\n\n    \
+                     /// The object's address, valid while `self` lives.\n    \
+                     pub fn as_mut_ptr(&mut self) -> *mut {ty} {{\n        \
+                         self.raw\n    \
+                     }}\n\n    \
+                     /// Returns the bindings the object came from.\n    \
+                     pub fn library(&self) -> &'lib {lib} {{\n        \
+                         self.lib\n    \
+                     }}\n\
+                 }}\n\n\
+                 impl ::core::ops::Drop for {wrapper}<'_> {{\n    \
+                     fn drop(&mut self) {{\n        \
+                         // SAFETY: the object is live and destroyed exactly once.\n        \
+                         unsafe {{ self.lib.{dtor}(self.raw) }};\n        \
+                         // SAFETY: the storage came from `ObjectStorage::into_raw`.\n        \
+                         unsafe {{ ::dlsym::__private::ObjectStorage::free(self.raw) }};\n    \
+                     }}\n\
+                 }}\n\n\
+                 impl ::core::fmt::Debug for {wrapper}<'_> {{\n    \
+                     fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {{\n        \
+                         f.debug_tuple(\"{wrapper}\").field(&self.raw).finish()\n    \
+                     }}\n\
+                 }}",
+                dtor = ident(&dtor.name),
+            );
+            let handle = Owned {
+                type_name: r.name.clone(),
+                free: dtor.name.clone(),
+                constructors: ctors.iter().map(|f| f.name.clone()).collect(),
+            };
+            self.handle_methods(header, &handle, &wrapper, opts);
+        }
+    }
+
     /// Whether a parameter of type `ty` takes an `owned` handle: `Some(true)`
     /// for `const T *`, `Some(false)` for `T *` or a pointer typedef.
     fn handle_param(&self, ty: &Type, type_name: &str) -> Option<bool> {
@@ -745,7 +914,17 @@ impl<'h> Emitter<'h> {
     /// `h.get()` (the `{type}_` prefix is dropped when that leaves a free
     /// name), `gzwrite(f, ..)` becomes `f.gzwrite(..)`.
     fn handle_methods(&mut self, header: &Header, o: &Owned, wrapper: &str, opts: &Options) {
-        const RESERVED: &[&str] = &["from_raw", "as_raw", "into_raw", "library", "drop", "fmt"];
+        const RESERVED: &[&str] = &[
+            "from_raw",
+            "as_raw",
+            "into_raw",
+            "as_ptr",
+            "as_mut_ptr",
+            "new",
+            "library",
+            "drop",
+            "fmt",
+        ];
         let candidates: Vec<(&Function, bool)> = header
             .items
             .iter()
@@ -1481,6 +1660,7 @@ mod tests {
                     name: "opaque".into(),
                     kind: RecordKind::Struct,
                     body: None,
+                    opaque_layout: None,
                     doc: None,
                 }),
                 Item::Enum(Enum {
@@ -1509,6 +1689,7 @@ mod tests {
                     variadic: false,
                     abi: Abi::C,
                     doc: Some("Sets the type.".into()),
+                    member: None,
                 }),
                 Item::Var(Var {
                     name: "counter".into(),

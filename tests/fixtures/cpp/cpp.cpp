@@ -18,6 +18,18 @@ int Registry::total = 11;
 int Registry::value() const { return v; }
 int Registry::secret() noexcept { return 13; }
 
+static int live_counters = 0;
+Counter::Counter() : value(new int(0)) { live_counters++; }
+Counter::Counter(int start) : value(new int(start)) { live_counters++; }
+Counter::~Counter() {
+    delete value;
+    live_counters--;
+}
+int Counter::get() const noexcept { return *value; }
+void Counter::add(int n) { *value += n; }
+int Counter::add(int a, int b) { return *value += a + b; }
+int Counter::live() noexcept { return live_counters; }
+
 Name::~Name() {}
 int name_len(const Name &n) noexcept {
     int len = 0;

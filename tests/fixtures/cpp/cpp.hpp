@@ -41,6 +41,23 @@ private:
     int v;
 };
 
+/** A class with constructors, methods and a destructor: Rust gets an RAII
+ * wrapper that allocates, constructs and destroys it. */
+class CPP_API Counter {
+public:
+    Counter();
+    explicit Counter(int start);
+    Counter(const Counter &) = delete;
+    ~Counter();
+    int get() const noexcept;
+    void add(int n);
+    int add(int a, int b);
+    static int live() noexcept;
+
+private:
+    int *value;
+};
+
 /** Not trivially copyable: only usable behind pointers. */
 class Name {
 public:

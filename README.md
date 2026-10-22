@@ -158,9 +158,20 @@ C++ headers (`--cpp`, automatic for `.hpp`/`.hh`/`.hxx`) work for the parts
 with a C-like ABI: functions and variables in namespaces and public static
 members are bound through the mangled names clang computes for the target
 (`geo::add(int, int)` becomes `geo_add_int_int` when overloaded), references
-become pointers, functions not declared `noexcept` use `extern "C-unwind"`,
-and classes that are not trivially copyable stay opaque. Member functions
-are not bound yet.
+become pointers, and functions not declared `noexcept` use
+`extern "C-unwind"`. Non-virtual member functions take `this` first, and a
+class with public constructors and a destructor gets an RAII wrapper: Rust
+allocates the object, constructs it in place, never moves it, and destroys
+and frees it on drop, with the methods on the wrapper:
+
+```rust
+let mut h = unsafe { HunspellObject::new(&lib, aff.as_ptr(), dic.as_ptr(), null()) };
+let ok = unsafe { h.spell_const_char_ptr_int_ptr_char_ptr_ptr(word.as_ptr(), null_mut(), null_mut()) };
+// `~Hunspell()` runs and the memory is freed here.
+```
+
+Classes that are not trivially copyable keep their size but not their
+fields, and are never passed by value. Virtual functions are not bound.
 
 From a `build.rs`, use `dlsym::codegen::Builder` (see the
 [`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).

@@ -10,8 +10,9 @@
 //! used by value, as opaque types when only used behind pointers.
 //!
 //! C++ headers ([`Options::cpp`]) are supported for what has a C-like ABI:
-//! functions and variables in namespaces, public static member functions,
-//! and trivially copyable types. Names are qualified with `_` (`ns::f` ->
+//! functions and variables in namespaces, public static and non-virtual
+//! member functions (`this` first), constructors and destructors, and
+//! trivially copyable types (other classes keep only their size). Names are qualified with `_` (`ns::f` ->
 //! `ns_f`), overloads get a suffix from their parameter types, and symbols
 //! are looked up by their mangled names as clang computes them for the
 //! target. Functions not declared `noexcept` use the `C-unwind` ABI.
@@ -22,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use super::clang::{self, Cursor, LibClang, Tu, Type as CType};
 use super::ir::{
-    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, Param, Record,
-    RecordBody, RecordKind, Type, Typedef, Var, Variant,
+    Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, Member,
+    MemberKind, Param, Record, RecordBody, RecordKind, Type, Typedef, Var, Variant,
 };
 
 /// Options for [`parse`].
@@ -261,6 +262,8 @@ struct RecordReq<'tu> {
     decl: Cursor<'tu>,
     full: bool,
     key: SortKey,
+    /// Size and alignment of a non-trivial C++ class.
+    opaque_layout: Option<(u64, u64)>,
 }
 
 struct Ctx<'tu, 'o> {
@@ -513,7 +516,16 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                     let full = c.definition().is_some() && self.is_trivial(c);
                     self.require_record(c, full);
                     if c.is_definition() {
-                        self.add_static_members(c);
+                        if !full {
+                            let ty = c.cursor_type();
+                            let usr = c.canonical().usr();
+                            if let (Some(size), Some(align), Some(r)) =
+                                (ty.size(), ty.align(), self.records.get_mut(&usr))
+                            {
+                                r.opaque_layout = Some((size, align));
+                            }
+                        }
+                        self.add_members(c);
                     }
                 }
                 clang::ENUM_DECL
@@ -545,15 +557,23 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         macros
     }
 
-    /// Adds the public static member functions and variables of a C++
-    /// class definition.
-    fn add_static_members(&mut self, class: Cursor<'tu>) {
+    /// Adds the public members of a C++ class definition: static and
+    /// non-virtual member functions, static variables, constructors (except
+    /// copy and move ones, and for abstract classes) and the destructor.
+    fn add_members(&mut self, class: Cursor<'tu>) {
+        let abstract_class = class.is_abstract();
         for m in class.children() {
             if !m.is_public() || !self.name_allowed(&qualified_name(m)) {
                 continue;
             }
             match m.kind() {
-                clang::CXX_METHOD if m.is_static_method() => self.add_function(m),
+                clang::CXX_METHOD if !m.is_virtual_method() => self.add_function(m),
+                clang::CONSTRUCTOR if !abstract_class && !m.is_copy_or_move_constructor() => {
+                    self.add_function(m)
+                }
+                clang::DESTRUCTOR if !m.is_virtual_method() || !abstract_class => {
+                    self.add_function(m)
+                }
                 clang::VAR_DECL => self.add_var(m),
                 _ => {}
             }
@@ -583,9 +603,20 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
         if c.linkage() != clang::LINKAGE_EXTERNAL || c.is_definition() || c.is_deleted() {
             return;
         }
-        let Some((name, link_name)) = self.symbol_names(c) else {
+        let Some((mut name, link_name)) = self.symbol_names(c) else {
             return;
         };
+        let member_kind = match c.kind() {
+            clang::CXX_METHOD if !c.is_static_method() => Some(MemberKind::Method),
+            clang::CONSTRUCTOR => Some(MemberKind::Constructor),
+            clang::DESTRUCTOR => Some(MemberKind::Destructor),
+            _ => None,
+        };
+        match member_kind {
+            Some(MemberKind::Constructor) => name = scope_prefix(c) + "new",
+            Some(MemberKind::Destructor) => name = scope_prefix(c) + "destroy",
+            _ => {}
+        }
         // C++ inline functions are only exported if the library happens to
         // use them out of line.
         if link_name.is_some() && c.is_inline() {
@@ -596,20 +627,44 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             return;
         }
         let ty = c.cursor_type();
-        let params: Vec<Param> = c
-            .arguments()
-            .into_iter()
-            .map(|a| Param {
+        let mut params = Vec::new();
+        let mut member = None;
+        if let Some(kind) = member_kind {
+            // `this` comes first; the class is needed by name only.
+            let Type::Named(class) = self.require_record(c.semantic_parent(), false) else {
+                return;
+            };
+            params.push(Param {
+                name: Some("this".into()),
+                ty: Type::Pointer {
+                    pointee: Box::new(Type::Named(class.clone())),
+                    is_const: kind == MemberKind::Method && c.is_const_method(),
+                },
+            });
+            member = Some(Member { class, kind });
+        }
+        for a in c.arguments() {
+            params.push(Param {
                 name: Some(a.spelling()).filter(|n| !n.is_empty()),
                 ty: self.convert_param(a.cursor_type()),
-            })
-            .collect();
+            });
+        }
+        // Constructors return `this` on some ABIs (MSVC, 32-bit ARM);
+        // ignoring it is compatible.
         let ret = self.convert(c.result_type(), true);
         let mut abi = abi(ty.calling_convention());
         // A C++ exception unwinding through a `"C"` function aborts the
         // process; `"C-unwind"` lets it propagate as a panic would.
-        if link_name.is_some() && abi == Abi::C && c.is_noexcept() != Some(true) {
-            abi = Abi::CUnwind;
+        // Destructors are implicitly `noexcept`.
+        if link_name.is_some()
+            && member_kind != Some(MemberKind::Destructor)
+            && c.is_noexcept() != Some(true)
+        {
+            abi = match abi {
+                Abi::C => Abi::CUnwind,
+                Abi::Thiscall => Abi::ThiscallUnwind,
+                other => other,
+            };
         }
         let mut doc = c.comment();
         if link_name.is_some() {
@@ -627,6 +682,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
             variadic: ty.kind() == clang::TYPE_FUNCTION_PROTO && ty.is_variadic(),
             abi,
             doc,
+            member,
         };
         let bad = f
             .params
@@ -770,16 +826,16 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
     /// non-trivial, and so does any non-POD template specialization (whose
     /// implicitly instantiated members libclang does not list).
     fn is_trivial(&mut self, decl: Cursor<'tu>) -> bool {
-        let Some(def) = decl.definition() else {
-            return true;
-        };
-        let ty = def.cursor_type();
+        let ty = decl.cursor_type();
         if ty.is_pod() {
             return true;
         }
         if ty.spelling().contains('<') {
             return false;
         }
+        let Some(def) = decl.definition() else {
+            return true;
+        };
         let usr = def.usr();
         if let Some(&t) = self.trivial.get(&usr) {
             return t;
@@ -829,12 +885,21 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 continue;
             }
             let mut name = f.name.clone();
-            if f.params.is_empty() {
+            let params = &f.params[usize::from(f.member.is_some())..];
+            if params.is_empty() {
                 name.push_str("_void");
             }
-            for p in &f.params {
+            for p in params {
                 name.push('_');
                 name.push_str(&type_suffix(&p.ty));
+            }
+            // `const` and non-`const` overloads of a method.
+            if let Some(Param {
+                ty: Type::Pointer { is_const: true, .. },
+                ..
+            }) = f.params.first().filter(|_| f.member.is_some())
+            {
+                name.push_str("_const");
             }
             let mut unique = name.clone();
             let mut n = 2;
@@ -959,6 +1024,7 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 decl,
                 full: by_value,
                 key,
+                opaque_layout: None,
             },
         );
         if by_value {
@@ -1167,6 +1233,11 @@ impl<'tu, 'o> Ctx<'tu, 'o> {
                 Item::Record(Record {
                     name: r.name,
                     kind: r.kind,
+                    opaque_layout: if body.is_none() {
+                        r.opaque_layout
+                    } else {
+                        None
+                    },
                     body,
                     doc: r.decl.comment(),
                 }),

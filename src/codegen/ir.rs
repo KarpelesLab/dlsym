@@ -93,6 +93,8 @@ pub enum Abi {
     Fastcall,
     /// `__thiscall` (32-bit Windows).
     Thiscall,
+    /// `__thiscall`, for C++ member functions that may unwind.
+    ThiscallUnwind,
     /// `__vectorcall`.
     Vectorcall,
 }
@@ -106,6 +108,7 @@ impl Abi {
             Abi::Stdcall => "stdcall",
             Abi::Fastcall => "fastcall",
             Abi::Thiscall => "thiscall",
+            Abi::ThiscallUnwind => "thiscall-unwind",
             Abi::Vectorcall => "vectorcall",
         }
     }
@@ -128,6 +131,29 @@ pub struct Function {
     pub abi: Abi,
     /// The documentation comment, if any.
     pub doc: Option<String>,
+    /// For C++ member functions, constructors and destructors: the class,
+    /// whose `this` pointer is the first parameter.
+    pub member: Option<Member>,
+}
+
+/// The class a C++ member function belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Member {
+    /// The class's Rust name.
+    pub class: String,
+    /// What kind of member it is.
+    pub kind: MemberKind,
+}
+
+/// The kind of a C++ member function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberKind {
+    /// A non-static member function (`const` ones take `*const` `this`).
+    Method,
+    /// A constructor (the complete-object one), initializing `this`.
+    Constructor,
+    /// The destructor (the complete-object one).
+    Destructor,
 }
 
 /// A function parameter.
@@ -172,6 +198,9 @@ pub struct Record {
     pub kind: RecordKind,
     /// The definition, or `None` for an opaque (incomplete) type.
     pub body: Option<RecordBody>,
+    /// For a C++ class that is not trivially copyable: its size and
+    /// alignment, so that it can be allocated (its fields stay hidden).
+    pub opaque_layout: Option<(u64, u64)>,
     /// The documentation comment, if any.
     pub doc: Option<String>,
 }

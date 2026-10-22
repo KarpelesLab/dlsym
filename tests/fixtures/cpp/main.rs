@@ -35,6 +35,26 @@ fn main() {
         assert_eq!(*c.geo_Registry_total(), 11);
         assert_eq!(c.geo_detail_version(), 2);
         assert_eq!(c.cpp_plain(21), 42);
+
+        // Member functions take `this` first; constructors initialize it.
+        let mut r = std::mem::MaybeUninit::<geo_Registry>::uninit();
+        c.geo_Registry_new(r.as_mut_ptr());
+        assert_eq!(c.geo_Registry_value(r.as_ptr()), 1);
+
+        // Classes with constructors and a destructor get RAII wrappers;
+        // their methods drop the `geo_Counter_` prefix, and overloads keep
+        // their parameter suffix.
+        assert_eq!(c.geo_Counter_live(), 0);
+        {
+            let mut a = GeoCounter::new_void(&c);
+            let mut b = GeoCounter::new_int(&c, 5);
+            assert_eq!(c.geo_Counter_live(), 2);
+            a.add_int(3);
+            assert_eq!(a.get(), 3);
+            assert_eq!(b.add_int_int(1, 2), 8);
+            assert_eq!(b.get(), 8);
+        }
+        assert_eq!(c.geo_Counter_live(), 0);
     }
     println!("cpp ok");
 }
