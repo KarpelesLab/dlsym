@@ -10,6 +10,7 @@ use std::ffi::{CStr, CString, c_char, c_int, c_longlong, c_uint, c_ulong, c_ulon
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::Bindings;
 
@@ -244,12 +245,30 @@ const CHILD_VISIT_CONTINUE: c_int = 1;
 const TU_DETAILED_PREPROCESSING_RECORD: c_uint = 0x01;
 const TU_SKIP_FUNCTION_BODIES: c_uint = 0x40;
 
+/// The process-wide libclang, loaded on first use and never unloaded.
+///
+/// libclang is not safe to unload: on Windows it leaves threads and
+/// callbacks behind that crash once its code is gone (on Linux it is linked
+/// with `-z nodelete`, so `dlclose` does nothing anyway). Keeping it in a
+/// `static` means it is never dropped.
+static LIBCLANG: OnceLock<LibClang> = OnceLock::new();
+
+/// Returns libclang, loading it on first use (see [`find`]). Later calls
+/// return the same library, whatever `explicit` is.
+pub(crate) fn load(explicit: Option<&Path>) -> Result<&'static LibClang, String> {
+    if let Some(lib) = LIBCLANG.get() {
+        return Ok(lib);
+    }
+    let lib = find(explicit)?;
+    Ok(LIBCLANG.get_or_init(|| lib))
+}
+
 /// Locates and loads libclang.
 ///
 /// Search order: `explicit`, then `$LIBCLANG_PATH` (a file or a
 /// directory), then `llvm-config --libdir`, then well-known locations for
 /// the platform, then the system's default library search path.
-pub(crate) fn load(explicit: Option<&Path>) -> Result<LibClang, String> {
+fn find(explicit: Option<&Path>) -> Result<LibClang, String> {
     let mut tried = Vec::new();
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(path) = explicit {

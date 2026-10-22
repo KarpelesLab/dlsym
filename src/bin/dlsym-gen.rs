@@ -23,6 +23,9 @@ Bindings:
                             `open_default` (repeatable, e.g. -l libz.so.1)
       --optional <glob>     mark matching functions and variables #[optional]
                             (repeatable)
+      --safe <glob>         declare matching functions `safe fn` (callable
+                            without `unsafe`); only for functions that are
+                            sound with any arguments (repeatable)
 
 Selection (declarations from the headers and the files they #include \"...\"):
       --header-dir <dir>    also bind declarations from headers under <dir>
@@ -48,6 +51,7 @@ struct Args {
     libs: Vec<String>,
     parse: parse::Options,
     optional: Vec<String>,
+    safe: Vec<String>,
     quiet: bool,
 }
 
@@ -70,6 +74,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "-s" | "--struct" => a.struct_name = Some(value(&arg)?),
             "-l" | "--lib" => a.libs.push(value(&arg)?),
             "--optional" => a.optional.push(value(&arg)?),
+            "--safe" => a.safe.push(value(&arg)?),
             "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
             "--allow" => a.parse.allow.push(value(&arg)?),
             "--block" => a.parse.block.push(value(&arg)?),
@@ -166,6 +171,8 @@ fn run(args: &Args) -> Result<(), String> {
             struct_name: struct_name.clone(),
             library_names: args.libs.clone(),
             optional: args.optional.clone(),
+            safe: args.safe.clone(),
+            no_module_attributes: false,
             comment: vec![
                 format!("Source: {}", headers.join(", ")),
                 format!(

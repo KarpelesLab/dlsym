@@ -123,6 +123,8 @@ DEMO_API int demo_anon_sum(const struct demo_anon *a);
 DEMO_API int demo_type(int type);
 DEMO_API demo_callback demo_get_callback(void);
 DEMO_API long double demo_long_double(void);
+/* Declared but not defined in the library: bound as #[optional]. */
+DEMO_API int demo_not_implemented(void);
 
 static inline int demo_inline(void) { return 1; }
 

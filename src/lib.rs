@@ -11,11 +11,13 @@
 //!   [`Arc`](std::sync::Arc) for when a borrow is impractical (e.g. `'static`
 //!   storage), without resorting to `transmute`.
 //! - Neither type hands out the raw function pointer through safe code:
-//!   functions are invoked through [`Symbol::call`], so the pointer cannot be
-//!   copied out and kept past an unload by accident.
+//!   functions are invoked through [`Symbol::call`] (or [`Symbol::with`] for
+//!   variadic ones), so the pointer cannot be copied out and kept past an
+//!   unload by accident.
 //! - The [`library!`] macro generates a struct that owns the library together
-//!   with every resolved symbol, which is the shape the `dlsym-gen` tool emits
-//!   from C headers.
+//!   with every resolved symbol, using Rust 2024 `unsafe extern` block
+//!   syntax. This is the shape the `dlsym-gen` tool emits from C headers
+//!   (see [`codegen`], behind the `codegen` feature).
 //!
 //! ```no_run
 //! # fn main() -> Result<(), dlsym::Error> {

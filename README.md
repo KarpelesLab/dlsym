@@ -11,54 +11,138 @@ improved memory safety. The most important safety guarantee of this library
 is the prevention of dangling symbols that may occur after a library is
 unloaded.
 
+It comes with **`dlsym-gen`**, which turns C headers into Rust bindings (or a
+whole crate) that load the library at run time: no link-time dependency, no
+`-sys` crate, and no LLVM needed to build.
+
+## Loading symbols
+
 ```rust
-use dlsym::{Bindings, Library};
+use dlsym::Library;
 
-// One-off lookups: the symbol borrows the library.
+// SAFETY: libm's initialisers are trusted.
 let libm = unsafe { Library::open("libm.so.6")? };
+// SAFETY: `cos` has this signature.
 let cos = unsafe { libm.get::<unsafe extern "C" fn(f64) -> f64>(c"cos")? };
+// SAFETY: `cos` is defined for every `f64`.
 assert_eq!(unsafe { cos.call((0.0,)) }, 1.0);
+// drop(libm) here would not compile: `cos` borrows it.
+```
 
-// Whole APIs: a struct that owns the library and every resolved function.
+- `Symbol<'lib, T>` borrows its `Library`, so the borrow checker rejects
+  unloading while a symbol is in use.
+- Symbols don't `Deref` to the raw pointer. Functions are called with
+  `call((args,))`, variadic ones with `with(|f| f(..))`, and the raw pointer
+  only comes out through `unsafe fn into_inner`.
+- `ArcSymbol<T>` (from `Library::get_arc`) keeps the library alive through an
+  `Arc`, and `Library::leak` gives `'static` symbols, both without
+  `transmute`.
+- Only `unsafe extern` function pointers and raw data pointers can be
+  requested: `get::<u64>` and safe `extern "C" fn` types don't compile.
+- A symbol whose address is null (`NullSymbol`) is told apart from a missing
+  one (`SymbolNotFound`).
+- `Library::open_first([...])`, `Library::this()`, `library_filename("z")`,
+  plus `os::unix::OpenOptions` (`RTLD_LAZY`/`GLOBAL`/`NODELETE`/`NOLOAD`/
+  `DEEPBIND`, `dlvsym`) and `os::windows::OpenOptions`
+  (`LOAD_LIBRARY_SEARCH_*`, already-loaded modules; loader error dialogs are
+  suppressed).
+
+## Binding a whole API
+
+`library!` declares a struct that owns the library and every symbol, using
+the same syntax as a Rust 2024 `unsafe extern` block:
+
+```rust
+use std::ffi::{c_char, c_int};
+use dlsym::Bindings;
+
 dlsym::library! {
-    pub struct LibM {
+    pub struct LibC {
         unsafe extern "C" {
-            pub safe fn sqrt(x: f64) -> f64;
-            pub fn frexp(x: f64, exp: *mut i32) -> f64;
+            pub safe fn abs(x: c_int) -> c_int;              // callable without `unsafe`
+            pub fn strlen(s: *const c_char) -> usize;        // an `unsafe` method
+            pub fn printf(fmt: *const c_char, ...) -> c_int; // variadic
+            #[optional]                                      // may be missing
+            pub fn strlcpy(d: *mut c_char, s: *const c_char, n: usize) -> usize;
+            #[link_name = "strlen"]                          // renamed
+            pub fn len(s: *const c_char) -> usize;
+            pub static mut environ: *const *const c_char;    // data
         }
     }
 }
-let m = unsafe { LibM::open("libm.so.6")? };
-assert_eq!(m.sqrt(16.0), 4.0);
+
+// SAFETY: libc's initialisers are trusted.
+let libc = unsafe { LibC::open("libc.so.6")? };
+assert_eq!(libc.abs(-4), 4);
+assert_eq!(unsafe { libc.strlen(c"abc".as_ptr()) }, 3);
+unsafe { libc.printf().with(|f| f(c"%d\n".as_ptr(), 42)) };
 ```
+
+Every non-`#[optional]` symbol is resolved when the struct is created, so a
+call is a constant-index load plus the call itself. The function pointers
+live inside the struct next to the library, so they cannot outlive it.
+
+## Generating bindings from C headers
+
+Install the generator with `cargo install dlsym --features codegen`, or
+download a prebuilt `dlsym-gen` (Linux, macOS universal and Windows, for
+x86_64 and aarch64) from the
+[releases page](https://github.com/KarpelesLab/dlsym/releases). It needs a
+libclang at run time: one from LLVM, Xcode, or your distribution's
+`libclang` package. It is found through `--libclang`, `$LIBCLANG_PATH`,
+`llvm-config`, or the usual install locations.
+
+```sh
+# A crate (Cargo.toml and lib.rs are only written if missing):
+dlsym-gen /usr/include/zlib.h --crate zlib-dl -l libz.so.1 -l libz.1.dylib -l zlib1.dll
+
+# Or a single module:
+dlsym-gen /usr/include/foo/foo.h -o src/foo.rs --struct Foo -- -I/usr/include/foo
+```
+
+```rust
+use zlib_dl::*;
+
+let z = unsafe { Zlib::open_default() }?;   // tries each -l name in turn
+let mut strm = z_stream::default();         // zeroed, like C's `= {0}`
+let version = ZLIB_VERSION.as_ptr();        // #defines become constants
+let rc = unsafe { z.deflateInit_(&mut strm, Z_BEST_COMPRESSION, version, size_of::<z_stream>() as i32) };
+```
+
+What it handles:
+
+- Functions (variadic, calling conventions), global variables, structs and
+  unions (packed, aligned, `#pragma pack`, bitfields with typed accessors,
+  C11 anonymous members, flexible array members), enums (as newtypes, so an
+  unexpected value from C is never undefined behaviour), typedefs and
+  function pointers.
+- Object-like `#define`s, evaluated by clang: integers, floats, strings and
+  constant expressions.
+- Struct layouts are checked at compile time against the C compiler's
+  (`size_of`, `align_of`, `offset_of!`).
+- It binds what the given headers declare, plus the headers they include
+  with `#include "..."` (`--header-dir` adds more). Types from elsewhere are
+  pulled in as needed: in full when used by value, opaque when only used
+  behind pointers.
+- `--allow`/`--block` filter by name, `--optional` marks symbols that may be
+  missing, and `--safe` declares functions callable without `unsafe`.
+  Unsupported items (e.g. `long double`) are skipped with a warning.
+
+From a `build.rs`, use `dlsym::codegen::Builder` (see the
+[`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).
 
 ## Compared to libloading
 
-- Symbols don't `Deref` to the raw function pointer, so the pointer can't be
-  copied out and outlive the library by accident.
-- `ArcSymbol` gives `'static`-friendly symbols without `transmute`.
-- Only function pointers and raw data pointers can be requested
-  (`get::<u64>` doesn't compile).
-- The `library!` macro and the `dlsym-gen` tool generate structs that resolve
-  a whole API at load time.
+|                                      | libloading | dlsym |
+|--------------------------------------|:----------:|:-----:|
+| Symbols borrow their library         | ✓          | ✓     |
+| Raw pointer copyable out of a symbol | via `*sym` | only `unsafe` |
+| `'static` symbols without transmute  |            | `ArcSymbol`, `leak` |
+| Symbol type checked to be a pointer  |            | ✓     |
+| Whole-API structs (`library!`)       |            | ✓     |
+| Header → bindings generator          |            | ✓     |
 
-## dlsym-gen
-
-`dlsym-gen` turns C headers into `dlsym::library!` bindings, and eventually
-into complete crates with safe wrappers. It's still a work in progress: the
-C parser is not implemented yet.
-
-It ships as a binary of this crate behind the `codegen` feature. Install it
-with `cargo install dlsym --features codegen`, or download a prebuilt binary
-(Linux, macOS universal, Windows; x86_64 and aarch64) from the
-[releases page](https://github.com/KarpelesLab/dlsym/releases). The same
-engine is available to `build.rs` scripts as `dlsym::codegen`.
-
-```sh
-dlsym-gen --struct LibFoo /usr/include/foo.h -o src/foo.rs -- -I/usr/include/foo
-```
-
-See [ROADMAP.md](ROADMAP.md).
+See [ROADMAP.md](ROADMAP.md) for what's next.
 
 ## License
 

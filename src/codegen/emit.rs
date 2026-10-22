@@ -21,9 +21,22 @@ pub struct Options {
     /// `#[optional]`: missing symbols then make the method return `None`
     /// instead of failing to load.
     pub optional: Vec<String>,
+    /// Glob patterns of functions and variables declared `safe`: their
+    /// methods can be called without `unsafe`. Only use this for functions
+    /// that are sound to call with any arguments (e.g. pure math, version
+    /// queries).
+    pub safe: Vec<String>,
     /// Extra lines for the header comment (e.g. the source headers).
     pub comment: Vec<String>,
+    /// Leave out the module-level `#![allow(..)]` attributes, for output
+    /// pulled in with `include!` (which rejects inner attributes). Put
+    /// [`ALLOW_ATTRIBUTES`] on the module around the `include!` instead.
+    pub no_module_attributes: bool,
 }
+
+/// The lints generated code needs allowed, as an outer attribute for a
+/// module that `include!`s it.
+pub const ALLOW_ATTRIBUTES: &str = "#[allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code, clippy::all, rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::bare_urls)]";
 
 /// Rust keywords that cannot be used as plain identifiers.
 const KEYWORDS: &[&str] = &[
@@ -46,10 +59,12 @@ pub fn emit(header: &Header, opts: &Options) -> String {
     for line in &opts.comment {
         let _ = writeln!(e.out, "// {line}");
     }
-    e.out.push_str(
-        "\n#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]\n\
-         #![allow(clippy::all, rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::bare_urls)]\n",
-    );
+    if !opts.no_module_attributes {
+        e.out.push_str(
+            "\n#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]\n\
+             #![allow(clippy::all, rustdoc::broken_intra_doc_links, rustdoc::invalid_html_tags, rustdoc::bare_urls)]\n",
+        );
+    }
 
     let mut functions = Vec::new();
     for item in &header.items {
@@ -484,6 +499,11 @@ impl<'h> Emitter<'h> {
             out.push_str("            #[optional]\n");
         }
         let fname = item_ident(&f.name, &mut out);
+        let safety = if !f.variadic && opts.safe.iter().any(|p| glob(p, &f.name)) {
+            "safe "
+        } else {
+            ""
+        };
         let mut params: Vec<String> = Vec::new();
         let mut used = HashSet::new();
         for (i, p) in f.params.iter().enumerate() {
@@ -505,7 +525,7 @@ impl<'h> Emitter<'h> {
         };
         let _ = writeln!(
             out,
-            "            pub fn {fname}({}){ret};",
+            "            pub {safety}fn {fname}({}){ret};",
             params.join(", ")
         );
         Ok(out)
@@ -520,12 +540,12 @@ impl<'h> Emitter<'h> {
             out.push_str("            #[optional]\n");
         }
         let name = item_ident(&v.name, &mut out);
-        let m = if v.is_const { "" } else { "mut " };
-        let _ = writeln!(
-            out,
-            "            pub static {m}{name}: {};",
-            rust_type(&v.ty)
-        );
+        let kind = match (v.is_const, opts.safe.iter().any(|p| glob(p, &v.name))) {
+            (false, _) => "static mut",
+            (true, true) => "safe static",
+            (true, false) => "static",
+        };
+        let _ = writeln!(out, "            pub {kind} {name}: {};", rust_type(&v.ty));
         out
     }
 }
@@ -980,7 +1000,8 @@ mod tests {
                 struct_name: "Demo".into(),
                 library_names: vec!["libdemo.so".into()],
                 optional: vec!["count*".into()],
-                comment: vec![],
+                safe: vec!["type".into()],
+                ..Default::default()
             },
         );
         for needle in [
@@ -989,7 +1010,7 @@ mod tests {
             "pub const RED: color = color(1);",
             r#"pub const VERSION: &::core::ffi::CStr = c"1.0\x0a";"#,
             "#[doc = \"Sets the type.\"]",
-            "pub fn r#type(arg0: color);",
+            "pub safe fn r#type(arg0: color);",
             "#[optional]\n            pub static mut counter: ::core::ffi::c_int;",
             "pub const LIBRARY_NAMES: &'static [&'static str] = &[\"libdemo.so\"];",
         ] {

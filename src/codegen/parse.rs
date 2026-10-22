@@ -88,7 +88,7 @@ const MACRO_PREFIX: &str = "__dlsym_gen_macro_";
 /// Parses the headers described by `opts`.
 pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     let lib = clang::load(opts.libclang.as_deref()).map_err(Error::LibClang)?;
-    let clang_version = clang::version(&lib);
+    let clang_version = clang::version(lib);
 
     let mut umbrella = String::new();
     let mut inputs = HashSet::new();
@@ -105,7 +105,7 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     let args = clang_args(&opts.clang_args);
 
     let tu = Tu::parse(
-        &lib,
+        lib,
         UMBRELLA,
         &args,
         &[(UMBRELLA.into(), umbrella.clone())],
@@ -133,7 +133,7 @@ pub fn parse(opts: &Options) -> Result<Parsed, Error> {
     ctx.name_types(&top);
     let macros = ctx.roots(&top);
     ctx.finish_records();
-    let consts = evaluate_macros(&lib, &args, &umbrella, &macros, &mut ctx);
+    let consts = evaluate_macros(lib, &args, &umbrella, &macros, &mut ctx);
     let header = ctx.take_header(consts);
     Ok(Parsed {
         header,

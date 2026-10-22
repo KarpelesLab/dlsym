@@ -3,7 +3,16 @@
 
 #![allow(clippy::multiple_unsafe_ops_per_block)]
 
-mod bindings;
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    clippy::all
+)]
+mod bindings {
+    include!("bindings.rs");
+}
 
 use std::ffi::{CStr, c_int, c_void};
 
@@ -38,9 +47,16 @@ fn main() {
     assert_eq!(DEMO_SMALL, demo_size(-1));
     assert_eq!(DEMO_ANON_B, 11);
 
+    // `safe` functions need no `unsafe` block.
+    assert_eq!(d.demo_add(2, 3), 5);
+    assert!(d.demo_is_even(4));
+
+    // `#[optional]` functions that the library lacks return `None`.
+    // SAFETY: never called, the symbol is missing.
+    assert_eq!(unsafe { d.demo_not_implemented() }, None);
+
     unsafe {
-        // Plain calls and globals.
-        assert_eq!(d.demo_add(2, 3), 5);
+        // Globals.
         assert_eq!(*d.demo_counter(), 1);
         *d.demo_counter() = 10;
         d.demo_add(0, 0);
@@ -77,7 +93,6 @@ fn main() {
 
         assert_eq!(d.demo_mix(DEMO_RED, DEMO_BLUE), demo_color(5));
         assert_eq!(d.demo_size_of(100), DEMO_LARGE);
-        assert!(d.demo_is_even(4));
 
         // Keyword-named function.
         assert_eq!(d.demo_type(2), 6);

@@ -11,6 +11,20 @@ use crate::{ArcSymbol, Error, Result, Symbol, SymbolName, SymbolType};
 ///
 /// The library is unloaded when this value is dropped (or explicitly with
 /// [`close`](Library::close)). Symbols borrowed from it cannot outlive it.
+///
+/// # Libraries that cannot be unloaded
+///
+/// Borrowing stops *your* code from using a library after it is unloaded,
+/// but some libraries leave things behind that keep running their code:
+/// threads they started, thread-local destructors, `atexit` handlers, or
+/// callbacks registered elsewhere. Unloading those crashes later, far from
+/// the cause (libclang on Windows is one). Keep such libraries loaded for
+/// the life of the process with [`leak`](Library::leak), a `static`, or
+#[cfg_attr(
+    unix,
+    doc = "[`OpenOptions::no_delete`](crate::os::unix::OpenOptions::no_delete)."
+)]
+#[cfg_attr(not(unix), doc = "`os::unix::OpenOptions::no_delete`.")]
 pub struct Library {
     handle: ManuallyDrop<imp::Handle>,
 }

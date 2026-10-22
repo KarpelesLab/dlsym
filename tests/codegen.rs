@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use dlsym::codegen::{emit, parse};
+use dlsym::codegen::{Builder, parse};
 
 fn skip(why: &str) {
     if std::env::var("DLSYM_REQUIRE_E2E").is_ok_and(|v| !v.is_empty() && v != "0") {
@@ -45,22 +45,27 @@ fn demo_library() {
     let Some(cc) = compiler() else {
         return skip("no C compiler found");
     };
-    let parsed = match parse::parse(&parse::Options {
-        headers: vec![fixtures().join("demo.h")],
-        ..Default::default()
-    }) {
-        Ok(p) => p,
+    let generated = match Builder::new()
+        .header(fixtures().join("demo.h"))
+        .struct_name("Demo")
+        .safe("demo_add")
+        .safe("demo_is_even")
+        .optional("demo_not_*")
+        .generate()
+    {
+        Ok(g) => g,
         Err(parse::Error::LibClang(e)) => return skip(&e),
         Err(e) => panic!("{e}"),
     };
     assert!(
-        parsed
+        generated
             .warnings
             .iter()
             .any(|w| w.contains("demo_long_double")),
         "{:?}",
-        parsed.warnings
+        generated.warnings
     );
+    let code = generated.code;
 
     let work = Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-demo");
     let _ = std::fs::remove_dir_all(&work);
@@ -85,14 +90,7 @@ fn demo_library() {
         .expect("run C compiler");
     assert!(status.success(), "C compiler failed");
 
-    // Generate bindings and a crate around them.
-    let code = emit::emit(
-        &parsed.header,
-        &emit::Options {
-            struct_name: "Demo".into(),
-            ..Default::default()
-        },
-    );
+    // Check the generated code, then build a crate around it.
     for needle in [
         "#[repr(C, packed)]\n#[derive(Clone, Copy, Debug)]\npub struct demo_packed",
         "#[repr(C, align(16))]",
@@ -101,6 +99,8 @@ fn demo_library() {
         "pub struct demo_handle {\n    _private: [u8; 0],",
         "pub const DEMO_VERSION: &::core::ffi::CStr = c\"1.2.3\";",
         "pub fn demo_sum(count: ::core::ffi::c_int, ...) -> ::core::ffi::c_int;",
+        "pub safe fn demo_add(",
+        "#[optional]\n            pub fn demo_not_implemented()",
     ] {
         assert!(code.contains(needle), "missing {needle:?}");
     }
