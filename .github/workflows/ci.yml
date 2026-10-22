@@ -54,6 +54,25 @@ jobs:
           CC: ${{ runner.os == 'Windows' && 'clang' || '' }}
         run: cargo test --locked --all-features ${{ matrix.platform.target && format('--target {0}', matrix.platform.target) || '' }}
 
+  musl:
+    name: test (linux-x86_64-musl, stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # JavaScript actions cannot run inside Alpine, so drive it with docker.
+      # Dynamic linking (-crt-static) is required: static musl binaries
+      # cannot dlopen.
+      - name: Test in Alpine
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w \
+            -e RUSTFLAGS="-D warnings -C target-feature=-crt-static" \
+            -e DLSYM_E2E_RUSTFLAGS="-C target-feature=-crt-static" \
+            -e DLSYM_REQUIRE_E2E=1 \
+            rust:alpine sh -c '
+              apk add --no-cache musl-dev gcc clang-dev &&
+              cargo test --locked --all-features
+            '
+
   freebsd:
     name: test (freebsd-x86_64, stable)
     runs-on: ubuntu-latest

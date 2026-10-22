@@ -150,7 +150,12 @@ fn demo_library() {
             "CARGO_TARGET_DIR",
             Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-target"),
         )
-        .env_remove("RUSTFLAGS")
+        // Don't inherit `-D warnings` and the like, but let CI pass flags
+        // the nested build needs (musl: `-C target-feature=-crt-static`).
+        .env(
+            "RUSTFLAGS",
+            std::env::var("DLSYM_E2E_RUSTFLAGS").unwrap_or_default(),
+        )
         .output()
         .expect("run cargo");
     let stdout = String::from_utf8_lossy(&out.stdout);

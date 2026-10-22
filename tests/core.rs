@@ -164,7 +164,10 @@ fn paths_and_address_info() {
         .to_string_lossy()
         .to_lowercase();
     assert!(
-        file.contains("libm") || file.contains("ucrtbase") || file.contains("libsystem"),
+        // musl serves libm from its dynamic linker (ld-musl-*.so.1).
+        ["libm", "ucrtbase", "libsystem", "musl"]
+            .iter()
+            .any(|n| file.contains(n)),
         "{info:?}"
     );
     // glibc's `cos` is an IFUNC resolving to a non-exported implementation,
