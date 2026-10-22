@@ -90,8 +90,7 @@ or gate any new one to the binary.
 ### `library!`
 
 - [ ] Optional lazy resolution (resolve on first call through a `OnceLock`)
-- [ ] Per-item `#[cfg]` (today: put the whole invocation under `cfg`, or use
-      `#[optional]`)
+- [x] Per-item `#[cfg]`: disabled items are neither looked up nor bound
 - [ ] Faster expansion for very large APIs (2000 items take ~11 s to compile)
 
 ### Generator

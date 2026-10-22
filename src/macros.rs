@@ -97,6 +97,9 @@ pub trait Bindings: Sized {
 /// [`open`](Bindings::open), [`open_first`](Bindings::open_first) and
 /// [`load`](Bindings::load).
 ///
+/// Items can carry `#[cfg(..)]`: when disabled, the symbol is not looked up
+/// and the method does not exist.
+///
 /// Variadic functions are limited to the `"C"` and `"C-unwind"` ABIs with
 /// 1 to 6 fixed arguments (the variadic [`SymbolType`](crate::SymbolType)
 /// implementations).
@@ -145,11 +148,14 @@ macro_rules! library {
         }
 
         impl $crate::Bindings for $name {
+            #[allow(unused_mut, unused_assignments, unused_variables)]
             fn load(library: $crate::Library) -> $crate::Result<Self> {
-                let symbols = [
-                    $($( $crate::__dlsym_item!(@load {&library} $abi [$(#[$($attr)*])*] [$ivis]
-                        [$($kw)+] [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]), )*)*
-                ];
+                let mut symbols = [::core::ptr::null_mut(); { <[&str]>::len($name::__DLSYM_NAMES) }];
+                let mut index = 0usize;
+                $($(
+                    $crate::__dlsym_item!{@load {&library, symbols, index} $abi [$(#[$($attr)*])*]
+                        [$ivis] [$($kw)+] [$(($($args)*))?] [$(-> $ret)?] [$(: $sty)?]}
+                )*)*
                 ::core::result::Result::Ok(Self {
                     __dlsym_symbols: $crate::__private::Symbols(symbols),
                     __dlsym_library: library,
@@ -229,24 +235,38 @@ macro_rules! __dlsym_item {
         ::core::stringify!($n)
     };
 
-    // ---- @load: resolve the symbol's address. ------------------------------
-    (@gen load {$lib:expr} $abi:literal [$o:ident] [$link:literal] $($rest:tt)*) => {
-        $crate::__private::resolve(
+    // ---- @load: resolve the symbol's address into its slot. ---------------
+    // Emits `#[cfg(..)]* { symbols[index] = resolve(..)?; } index += 1;` so
+    // that items disabled by `#[cfg]` are not looked up.
+    (@gen load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] [$link:literal]
+        [$($a:tt)*] [$vis:vis] $($x:tt)*) => {
+        $crate::__dlsym_item!{@load_stmt {$syms $i ($crate::__private::resolve(
             $lib,
             const { $crate::__private::link_name(::core::concat!($link, "\0")) },
             $crate::__dlsym_item!(@optional $o),
-        )?
+        )?)} [] $($a)*}
     };
-    (@gen load {$lib:expr} $abi:literal [$o:ident] [] [$($a:tt)*] [$vis:vis] $($x:tt)*) => {
-        $crate::__dlsym_item!(@load_default {$lib} [$o] $($x)*)
-    };
-    (@load_default {$lib:expr} [$o:ident] [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*]
+    (@gen load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] []
+        [$($a:tt)*] [$vis:vis] [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*]
         $safety:ident $kind:ident $n:ident) => {
-        $crate::__private::resolve(
+        $crate::__dlsym_item!{@load_stmt {$syms $i ($crate::__private::resolve(
             $lib,
             const { $crate::__private::link_name(::core::concat!(::core::stringify!($n), "\0")) },
             $crate::__dlsym_item!(@optional $o),
-        )?
+        )?)} [] $($a)*}
+    };
+    (@load_stmt $k:tt [$($c:tt)*] #[cfg $p:tt] $($t:tt)*) => {
+        $crate::__dlsym_item!{@load_stmt $k [$($c)* $p] $($t)*}
+    };
+    (@load_stmt $k:tt [$($c:tt)*] #[$($x:tt)*] $($t:tt)*) => {
+        $crate::__dlsym_item!{@load_stmt $k [$($c)*] $($t)*}
+    };
+    (@load_stmt {$syms:ident $i:ident ($($e:tt)*)} [$($p:tt)*]) => {
+        $(#[cfg $p])*
+        {
+            $syms[$i] = $($e)*;
+        }
+        $i += 1;
     };
     (@optional yes) => { true };
     (@optional no) => { false };

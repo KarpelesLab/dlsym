@@ -25,6 +25,12 @@ dlsym::library! {
             #[optional]
             pub static dlsym_missing_static: c_int;
             fn r#free(p: *mut std::ffi::c_void);
+            /// Never looked up: disabled by `cfg`.
+            #[cfg(any())]
+            pub fn dlsym_disabled_by_cfg();
+            #[cfg(all())]
+            #[link_name = "strlen"]
+            pub fn strlen_enabled_by_cfg(s: *const c_char) -> usize;
         }
     }
 }
@@ -65,6 +71,8 @@ fn functions() {
         assert_eq!(c.string_length(c"hi".as_ptr()), 2);
         assert_eq!(c.strcmp(c"a".as_ptr(), c"a".as_ptr()), 0);
     }
+    // SAFETY: valid C string.
+    assert_eq!(unsafe { c.strlen_enabled_by_cfg(c"abc".as_ptr()) }, 3);
     // `r#free` resolves the `free` symbol.
     // SAFETY: freeing null is a no-op.
     unsafe { c.r#free(std::ptr::null_mut()) };
