@@ -1,13 +1,13 @@
-//! C front end: headers → [`ir`](crate::ir).
+//! C front end: headers → [`ir`](super::ir).
 //!
-//! Planned implementation: libclang, itself loaded at runtime through
-//! [`dlsym`], so `dlsym-gen` needs no LLVM at build time and works with
-//! whatever libclang the system provides. See `ROADMAP.md`.
+//! Planned implementation: libclang, itself loaded at runtime through this
+//! crate's [`Library`](crate::Library), so no LLVM is needed at build time, and
+//! whatever libclang the system provides is used. See `ROADMAP.md`.
 
 use std::fmt;
 use std::path::Path;
 
-use crate::ir::Header;
+use super::ir::Header;
 
 /// Errors produced while parsing headers.
 #[derive(Debug)]

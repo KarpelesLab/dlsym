@@ -1,14 +1,16 @@
 # Roadmap
 
-Two crates live in this workspace:
+A single crate, `dlsym`:
 
-| Crate       | Role                                                                    |
-|-------------|-------------------------------------------------------------------------|
-| `dlsym`     | Runtime library. Only depends on `libc` / `windows-sys`.                |
-| `dlsym-gen` | Header → Rust generator (binary + library, so it works from `build.rs`). |
+| Part                          | Role                                                     |
+|-------------------------------|----------------------------------------------------------|
+| library (default)             | Runtime loader. Only depends on `libc` / `windows-sys`.  |
+| `codegen` feature             | `dlsym::codegen`: C header → Rust generator, for `build.rs`. |
+| `dlsym-gen` binary (`codegen`) | Command-line front end to `dlsym::codegen`.              |
 
-Generated code only depends on `dlsym`, never on `dlsym-gen`, and nothing in
-the pipeline needs LLVM at build time.
+Generated code only needs the default features, and nothing in the pipeline
+needs LLVM at build time. The generator has no dependencies beyond `dlsym`
+itself; keep it that way, or gate any new one to the binary.
 
 ## Design principles
 
@@ -35,7 +37,7 @@ the pipeline needs LLVM at build time.
 - [x] Unix backend (`dlopen`), `os::unix::LibraryExt` (`open_with_flags`, `this`)
 - [x] Windows backend written, **never compiled**
 - [x] `library!` macro and the `Bindings` trait
-- [x] `dlsym-gen`: IR, emitter (functions only), CLI; parser stubbed
+- [x] `codegen` feature and `dlsym-gen` binary: IR, emitter (functions only), CLI; parser stubbed
 - [x] Tests against libm, plus a `compile_fail` test that a symbol can't outlive its library
 
 ## Phase 1: Core loader hardening → `dlsym` 0.1
@@ -112,12 +114,13 @@ The step from *bindings* to *safe bindings*:
   - errors, e.g. "negative return means `errno`", generating `Result`
 - [ ] `dlsym-gen crate <header> --name libfoo-dl`: emits a complete crate
       (`Cargo.toml`, raw `sys` module, safe wrapper module, README)
-- [ ] `build.rs` API (`dlsym_gen::Builder`)
+- [ ] `build.rs` API (`dlsym::codegen::Builder`)
 - [ ] Possibly ship annotation sets for common system libraries
 
 ## Phase 5: Release
 
 - [ ] docs.rs metadata covering Unix and Windows targets
 - [ ] Examples (`examples/`) for each feature
-- [ ] Publish `dlsym` and `dlsym-gen` 0.1.0 (both names were unclaimed
-      on crates.io as of 2026-10-22)
+- [x] release-plz: versioning, changelog and crates.io publishing on
+      `master`, with prebuilt `dlsym-gen` binaries attached to each release
+- [ ] 0.1.0 once phases 1–3 land (0.0.x pre-releases until then)

@@ -32,6 +32,8 @@
 //! # Ok(()) }
 //! ```
 
+#[cfg(feature = "codegen")]
+pub mod codegen;
 mod error;
 mod library;
 mod macros;

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use dlsym_gen::{emit, parse};
+use dlsym::codegen::{emit, parse};
 
 const USAGE: &str = "\
 usage: dlsym-gen [options] <header.h> [-- <clang args>...]

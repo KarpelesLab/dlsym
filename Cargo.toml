@@ -1,35 +1,26 @@
-[workspace]
-members = [".", "dlsym-gen"]
-resolver = "3"
-
-[workspace.package]
-version = "0.1.0"
+[package]
+name = "dlsym"
+version = "0.0.1"
 edition = "2024"
 rust-version = "1.95"
+description = "Memory-safe bindings around the platform's dynamic library loading primitives"
+keywords = ["dlopen", "dlsym", "ffi", "dynamic", "library"]
+categories = ["api-bindings", "external-ffi-bindings", "os", "development-tools::ffi"]
 license = "MIT"
 authors = ["Karpelès Lab Inc."]
 repository = "https://github.com/KarpelesLab/dlsym"
-
-[workspace.lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
-missing_docs = "warn"
-
-[workspace.lints.clippy]
-undocumented_unsafe_blocks = "warn"
-multiple_unsafe_ops_per_block = "warn"
-
-[package]
-name = "dlsym"
-description = "Memory-safe bindings around the platform's dynamic library loading primitives"
-keywords = ["dlopen", "dlsym", "ffi", "dynamic", "library"]
-categories = ["api-bindings", "external-ffi-bindings", "os"]
 readme = "README.md"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-authors.workspace = true
-repository.workspace = true
+exclude = [".github/"]
+
+[features]
+# The C header → Rust bindings generator (`dlsym::codegen` and the
+# `dlsym-gen` binary).
+codegen = []
+
+[[bin]]
+name = "dlsym-gen"
+path = "src/bin/dlsym-gen.rs"
+required-features = ["codegen"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -41,5 +32,13 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Diagnostics_Debug",
 ] }
 
-[lints]
-workspace = true
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"

@@ -1,8 +1,8 @@
-//! Rust code generation from the [`ir`](crate::ir).
+//! Rust code generation from the [`ir`](super::ir).
 
 use std::fmt::Write;
 
-use crate::ir::{Function, Header, Item, Type};
+use super::ir::{Function, Header, Item, Type};
 
 /// Options controlling code generation.
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ const KEYWORDS: &[&str] = &[
     "trait", "true", "try", "type", "unsafe", "use", "where", "while", "yield",
 ];
 
-/// Generates a module body declaring a [`dlsym::library!`] struct for every
+/// Generates a module body declaring a [`library!`](crate::library!) struct for every
 /// function in `header`.
 ///
 /// Variadic functions are skipped with a comment, as they cannot be wrapped
@@ -117,7 +117,7 @@ fn rust_type(ty: &Type) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Param;
+    use crate::codegen::ir::Param;
 
     fn param(name: &str, ty: Type) -> Param {
         Param {

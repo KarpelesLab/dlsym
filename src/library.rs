@@ -19,7 +19,11 @@ impl Library {
     /// platform's rules when `path` contains no directory separator.
     ///
     /// On Unix this is `dlopen(path, RTLD_NOW | RTLD_LOCAL)`; use
-    /// [`os::unix::LibraryExt`](crate::os::unix::LibraryExt) for other flags.
+    #[cfg_attr(
+        unix,
+        doc = "[`os::unix::LibraryExt`](crate::os::unix::LibraryExt) for other flags."
+    )]
+    #[cfg_attr(not(unix), doc = "`os::unix::LibraryExt` for other flags.")]
     ///
     /// # Safety
     ///

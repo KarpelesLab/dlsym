@@ -1,5 +1,11 @@
 # dlsym
 
+[![CI](https://github.com/KarpelesLab/dlsym/actions/workflows/ci.yml/badge.svg)](https://github.com/KarpelesLab/dlsym/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/dlsym.svg)](https://crates.io/crates/dlsym)
+[![docs.rs](https://img.shields.io/docsrs/dlsym)](https://docs.rs/dlsym)
+[![MSRV](https://img.shields.io/badge/MSRV-1.95-orange.svg)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Bindings around the platform's dynamic library loading primitives with greatly
 improved memory safety. The most important safety guarantee of this library
 is the prevention of dangling symbols that may occur after a library is
@@ -39,6 +45,12 @@ assert_eq!(unsafe { m.pow(2.0, 10.0) }, 1024.0);
 `dlsym-gen` turns C headers into `dlsym::library!` bindings, and eventually
 into complete crates with safe wrappers. It's still a work in progress: the
 C parser is not implemented yet.
+
+It ships as a binary of this crate behind the `codegen` feature. Install it
+with `cargo install dlsym --features codegen`, or download a prebuilt binary
+(Linux, macOS universal, Windows; x86_64 and aarch64) from the
+[releases page](https://github.com/KarpelesLab/dlsym/releases). The same
+engine is available to `build.rs` scripts as `dlsym::codegen`.
 
 ```sh
 dlsym-gen --struct LibFoo /usr/include/foo.h -o src/foo.rs -- -I/usr/include/foo
