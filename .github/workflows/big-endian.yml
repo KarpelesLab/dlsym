@@ -1,0 +1,29 @@
+name: Big-endian
+
+# Runs the test suite, including the generator's end-to-end test (which
+# checks bitfield layouts against the C compiler), on s390x under QEMU.
+# Emulation is slow, so this runs weekly and on demand rather than on every
+# push.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1"
+
+jobs:
+  s390x:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+      - uses: uraimo/run-on-arch-action@v2
+        with:
+          arch: s390x
+          distro: ubuntu24.04
+          install: |
+            apt-get update -q
+            apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev libclang-dev
+          run: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            . "$HOME/.cargo/env"
+            DLSYM_REQUIRE_E2E=1 cargo test --locked --all-features
