@@ -138,6 +138,13 @@ impl Library {
         convert(name, lookup)
     }
 
+    /// Returns the path the library was loaded from, if the platform can
+    /// tell (glibc, Apple platforms and Windows). For [`Library::this`], this
+    /// is the executable.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        crate::info::library_path(&self.handle)
+    }
+
     /// Keeps the library loaded for the rest of the program, so symbols
     /// borrowed from it are `'static`.
     pub fn leak(self) -> &'static Library {

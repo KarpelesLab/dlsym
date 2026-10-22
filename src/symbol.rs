@@ -42,6 +42,11 @@ impl<T: SymbolType> Symbol<'_, T> {
         self.inner.to_address()
     }
 
+    /// Returns the loader's information about this symbol's address.
+    pub fn info(&self) -> Option<crate::AddressInfo> {
+        crate::AddressInfo::of(self.as_ptr())
+    }
+
     /// Runs `f` with the raw symbol.
     ///
     /// This is how variadic functions are called:

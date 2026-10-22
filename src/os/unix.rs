@@ -219,3 +219,97 @@ pub(crate) fn close(handle: Handle) -> Result<()> {
         })
     }
 }
+
+pub(crate) fn address_info(addr: *const c_void) -> Option<crate::AddressInfo> {
+    // SAFETY: `Dl_info` is plain data; all-zero is a valid initial value.
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: `dladdr` only reads `addr` as a number and writes `info`.
+    if unsafe { libc::dladdr(addr, &mut info) } == 0 || info.dli_fname.is_null() {
+        return None;
+    }
+    // SAFETY: on success, `dli_fname` (checked above) is a valid C string
+    // owned by the loader.
+    let library = unsafe { CStr::from_ptr(info.dli_fname) };
+    let library = std::ffi::OsStr::from_bytes(library.to_bytes()).into();
+    // SAFETY: as above, for a non-null `dli_sname`.
+    let symbol =
+        (!info.dli_sname.is_null()).then(|| unsafe { CStr::from_ptr(info.dli_sname) }.to_owned());
+    Some(crate::AddressInfo {
+        library,
+        library_base: info.dli_fbase,
+        symbol,
+        symbol_address: info.dli_saddr,
+    })
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
+    // The public prefix of glibc's `struct link_map`.
+    #[repr(C)]
+    struct LinkMap {
+        l_addr: usize,
+        l_name: *const std::ffi::c_char,
+    }
+    let mut map: *const LinkMap = std::ptr::null();
+    // SAFETY: the handle is live and `RTLD_DI_LINKMAP` writes a
+    // `struct link_map *` into `map`.
+    let rc = unsafe {
+        libc::dlinfo(
+            handle.0.as_ptr(),
+            libc::RTLD_DI_LINKMAP,
+            (&raw mut map).cast(),
+        )
+    };
+    if rc != 0 || map.is_null() {
+        take_error();
+        return None;
+    }
+    // SAFETY: glibc keeps the link map alive while the library is loaded.
+    let name = unsafe { (*map).l_name };
+    // SAFETY: `l_name` is a valid C string.
+    let name = unsafe { CStr::from_ptr(name) };
+    if name.is_empty() {
+        // The main program has an empty name.
+        return std::env::current_exe().ok();
+    }
+    Some(std::ffi::OsStr::from_bytes(name.to_bytes()).into())
+}
+
+#[cfg(target_vendor = "apple")]
+// One invariant covers every call in the block below.
+#[allow(clippy::multiple_unsafe_ops_per_block)]
+pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
+    // There is no `dlinfo`: find the loaded image whose handle matches.
+    // SAFETY: the dyld image list functions have no preconditions; each
+    // `dlopen(.., RTLD_NOLOAD)` that succeeds is balanced by a `dlclose`.
+    unsafe {
+        for i in 0..libc::_dyld_image_count() {
+            let name = libc::_dyld_get_image_name(i);
+            if name.is_null() {
+                continue;
+            }
+            let h = libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY);
+            if h.is_null() {
+                continue;
+            }
+            libc::dlclose(h);
+            if h == handle.0.as_ptr() {
+                return Some(std::ffi::OsStr::from_bytes(CStr::from_ptr(name).to_bytes()).into());
+            }
+        }
+        // `dlopen(NULL)` returns a special handle for the main program.
+        let main = libc::dlopen(std::ptr::null(), libc::RTLD_NOLOAD | libc::RTLD_LAZY);
+        if !main.is_null() {
+            libc::dlclose(main);
+            if main == handle.0.as_ptr() {
+                return std::env::current_exe().ok();
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple")))]
+pub(crate) fn library_path(_handle: &Handle) -> Option<std::path::PathBuf> {
+    None
+}

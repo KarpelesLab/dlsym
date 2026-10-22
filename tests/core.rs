@@ -132,3 +132,54 @@ fn filenames() {
         assert_eq!(name, "libz.so");
     }
 }
+
+#[test]
+fn paths_and_address_info() {
+    #[cfg(target_os = "linux")]
+    let name = "libm.so.6";
+    #[cfg(target_vendor = "apple")]
+    let name = "/usr/lib/libm.dylib";
+    #[cfg(windows)]
+    let name = "ucrtbase.dll";
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
+    let name = "libm.so";
+    // SAFETY: libm is a system library.
+    let lib = unsafe { Library::open(name) }.unwrap();
+    // SAFETY: never called.
+    let cos = unsafe { lib.get::<*const u8>(c"cos") }.unwrap();
+    let info = cos.info().expect("address info");
+    let file = info
+        .library
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
+    assert!(
+        file.contains("libm") || file.contains("ucrtbase") || file.contains("libsystem"),
+        "{info:?}"
+    );
+    // glibc's `cos` is an IFUNC resolving to a non-exported implementation,
+    // so check symbol names on `dlsym` itself.
+    #[cfg(unix)]
+    {
+        let this = Library::this().unwrap();
+        // SAFETY: never called.
+        let f = unsafe { this.get::<*const u8>(c"dlsym") }.unwrap();
+        let info = f.info().expect("address info");
+        assert_eq!(info.symbol.as_deref(), Some(c"dlsym"), "{info:?}");
+        assert_eq!(info.symbol_address, f.as_ptr());
+    }
+    if cfg!(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_vendor = "apple",
+        windows
+    )) {
+        let path = lib.path().expect("library path");
+        assert!(
+            path.is_absolute() || cfg!(target_vendor = "apple"),
+            "{path:?}"
+        );
+        assert!(Library::this().unwrap().path().is_some());
+    }
+    assert!(dlsym::AddressInfo::of(std::ptr::null()).is_none());
+}

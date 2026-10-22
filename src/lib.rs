@@ -33,6 +33,24 @@
 //! drop(libm); // fine here; moving this above the call would not compile
 //! # Ok(()) }
 //! ```
+//!
+//! # Platform notes
+//!
+//! - **Unloading.** Borrowing only protects your own use of a library. Some
+//!   libraries leave threads, thread-local destructors or callbacks behind
+//!   that crash once they are unloaded; see
+//!   [Libraries that cannot be unloaded](Library#libraries-that-cannot-be-unloaded).
+//! - **Thread-local data.** Looking up a C `__thread` / `_Thread_local`
+//!   variable returns its address *for the calling thread*. Such a data
+//!   symbol must only be used on the thread that looked it up.
+//! - **Error reporting.** Lookups rely on `dlerror` to tell a missing
+//!   symbol from one whose address is null. Its state is thread-local on
+//!   glibc, musl, Apple platforms and the BSDs, so concurrent lookups from
+//!   several threads are fine there.
+//! - **Lazy binding.** With `RTLD_LAZY` (see `os::unix::OpenOptions`), a
+//!   library whose own dependencies are missing may load fine and abort the
+//!   process later when a function is first called. [`Library::open`] uses
+//!   `RTLD_NOW` to report such problems upfront.
 
 #[doc(hidden)]
 #[path = "private.rs"]
@@ -40,6 +58,7 @@ pub mod __private;
 #[cfg(feature = "codegen")]
 pub mod codegen;
 mod error;
+mod info;
 mod library;
 mod macros;
 mod name;
@@ -48,6 +67,7 @@ mod symbol;
 mod types;
 
 pub use error::Error;
+pub use info::AddressInfo;
 pub use library::{Library, library_filename};
 pub use macros::Bindings;
 pub use name::SymbolName;

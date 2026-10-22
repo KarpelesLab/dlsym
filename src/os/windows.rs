@@ -10,7 +10,8 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     SEM_FAILCRITICALERRORS, SetThreadErrorMode,
 };
 use windows_sys::Win32::System::LibraryLoader::{
-    GetModuleHandleExW, GetProcAddress, LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
+    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    GetModuleFileNameW, GetModuleHandleExW, GetProcAddress, LOAD_LIBRARY_SEARCH_APPLICATION_DIR,
     LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
     LOAD_LIBRARY_SEARCH_SYSTEM32, LOAD_LIBRARY_SEARCH_USER_DIRS, LOAD_WITH_ALTERED_SEARCH_PATH,
     LoadLibraryExW,
@@ -238,4 +239,47 @@ pub(crate) fn close(handle: Handle) -> Result<()> {
             message: last_error(),
         })
     }
+}
+
+/// `GetModuleFileNameW`, growing the buffer as needed.
+fn module_path(module: HMODULE) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buf = vec![0u16; 260];
+    loop {
+        // SAFETY: `buf` is writable for `buf.len()` UTF-16 units.
+        let n = unsafe { GetModuleFileNameW(module, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            return Some(std::ffi::OsString::from_wide(&buf[..n]).into());
+        }
+        buf.resize(buf.len() * 2, 0);
+    }
+}
+
+pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
+    module_path(handle.0.as_ptr())
+}
+
+pub(crate) fn address_info(addr: *const c_void) -> Option<crate::AddressInfo> {
+    let mut module: HMODULE = std::ptr::null_mut();
+    // SAFETY: with FROM_ADDRESS, the "name" is any address inside the
+    // module; UNCHANGED_REFCOUNT means nothing needs releasing.
+    let ok = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            addr.cast(),
+            &mut module,
+        )
+    };
+    if ok == 0 || module.is_null() {
+        return None;
+    }
+    Some(crate::AddressInfo {
+        library: module_path(module)?,
+        library_base: module,
+        symbol: None,
+        symbol_address: std::ptr::null_mut(),
+    })
 }
