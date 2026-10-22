@@ -19,7 +19,7 @@ jobs:
       - uses: uraimo/run-on-arch-action@v2
         with:
           arch: s390x
-          distro: ubuntu24.04
+          distro: ubuntu_latest
           install: |
             apt-get update -q
             apt-get install -yq --no-install-recommends ca-certificates curl gcc libc6-dev libclang-dev
