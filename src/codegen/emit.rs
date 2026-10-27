@@ -809,7 +809,8 @@ impl<'h> Emitter<'h> {
                 let plan = match self.plan(f, 1, &w) {
                     Ok(p) => p,
                     Err(why) => {
-                        let _ = writeln!(ctor_fns, "    // `{}`: annotations ignored: {why}", f.name);
+                        let _ =
+                            writeln!(ctor_fns, "    // `{}`: annotations ignored: {why}", f.name);
                         match self.plan(f, 1, &Wrap::default()) {
                             Ok(p) => p,
                             Err(_) => continue,
