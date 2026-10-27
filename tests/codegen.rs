@@ -128,6 +128,8 @@ fn demo_library() {
         .wrap("demo_fail_errno:ret=errno,safe")
         .wrap("demo_version:ret=static-str,safe")
         .wrap("demo_handle_label:slice=buf/len,ret=negative,safe")
+        .wrap("demo_greet:str?,safe")
+        .wrap("demo_handle_open:out=out,ret=nonzero,safe")
         // Probing the built library marks `demo_not_implemented` optional.
         .library_name(lib.to_str().unwrap())
         .generate()

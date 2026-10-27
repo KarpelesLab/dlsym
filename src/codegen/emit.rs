@@ -131,6 +131,7 @@ pub fn emit(header: &Header, opts: &Options) -> String {
         }
     }
     e.library(&functions, opts);
+    e.owned_names(header, opts);
     e.macro_fns(header, opts);
     e.wrappers(header, opts);
     e.owned(header, opts);
@@ -146,6 +147,8 @@ struct Emitter<'h> {
     unions: HashSet<&'h str>,
     /// Names of generated wrapper types.
     wrappers: HashSet<String>,
+    /// The wrapper type of each valid [`Owned`] handle type.
+    owned_wrappers: HashMap<String, String>,
 }
 
 impl<'h> Emitter<'h> {
@@ -156,6 +159,7 @@ impl<'h> Emitter<'h> {
             typedefs: HashMap::new(),
             unions: HashSet::new(),
             wrappers: HashSet::new(),
+            owned_wrappers: HashMap::new(),
         };
         for item in &header.items {
             match item {
@@ -569,6 +573,32 @@ impl<'h> Emitter<'h> {
         }
     }
 
+    /// Names the wrapper type of every valid [`Options::owned`] handle
+    /// type, before anything refers to them.
+    fn owned_names(&mut self, header: &Header, opts: &Options) {
+        let mut taken: HashSet<String> = header
+            .items
+            .iter()
+            .filter_map(|i| i.type_name().map(str::to_owned))
+            .collect();
+        taken.insert(opts.struct_name.clone());
+        for o in &opts.owned {
+            let valid = header.items.iter().any(|i| {
+                matches!(i, Item::Function(f) if f.name == o.free
+                    && matches!(f.params.as_slice(), [p] if self.handle_param(&p.ty, &o.type_name).is_some()))
+            });
+            if !valid || self.owned_wrappers.contains_key(&o.type_name) {
+                continue;
+            }
+            let mut wrapper = camel_case(&o.type_name);
+            while !taken.insert(wrapper.clone()) {
+                wrapper.push_str("Owned");
+            }
+            self.wrappers.insert(wrapper.clone());
+            self.owned_wrappers.insert(o.type_name.clone(), wrapper);
+        }
+    }
+
     /// Emits RAII wrappers for [`Options::owned`] handle types.
     fn owned(&mut self, header: &Header, opts: &Options) {
         let functions: HashMap<&str, &Function> = header
@@ -576,16 +606,6 @@ impl<'h> Emitter<'h> {
             .iter()
             .filter_map(|i| match i {
                 Item::Function(f) => Some((f.name.as_str(), f)),
-                _ => None,
-            })
-            .collect();
-        let mut taken: HashSet<String> = header
-            .items
-            .iter()
-            .filter_map(|i| match i {
-                Item::Typedef(t) => Some(t.name.clone()),
-                Item::Record(r) => Some(r.name.clone()),
-                Item::Enum(e) => e.name.clone(),
                 _ => None,
             })
             .collect();
@@ -628,11 +648,9 @@ impl<'h> Emitter<'h> {
                 continue;
             }
             let raw = rust_type(&param.ty);
-            let mut wrapper = camel_case(&o.type_name);
-            while !taken.insert(wrapper.clone()) {
-                wrapper.push_str("Owned");
-            }
-            self.wrappers.insert(wrapper.clone());
+            let Some(wrapper) = self.owned_wrappers.get(&o.type_name).cloned() else {
+                continue;
+            };
             let free_call = format!("self.lib.{}(self.raw)", ident(&free.name));
             let _ = writeln!(
                 self.out,
@@ -705,11 +723,11 @@ impl<'h> Emitter<'h> {
                     continue;
                 }
                 let w = ctor_wrap(&opts.wraps, ctor);
-                let plan = match self.plan(f, 0, &w) {
+                let plan = match self.plan(f, 0, &w, "self") {
                     Ok(p) => p,
                     Err(why) => {
                         let _ = writeln!(self.out, "// `{ctor}`: annotations ignored: {why}");
-                        match self.plan(f, 0, &Wrap::default()) {
+                        match self.plan(f, 0, &Wrap::default(), "self") {
                             Ok(p) => p,
                             Err(_) => continue,
                         }
@@ -768,6 +786,7 @@ impl<'h> Emitter<'h> {
             .filter_map(|i| i.type_name().map(str::to_owned))
             .collect();
         types.extend(self.wrappers.iter().cloned());
+        types.insert(opts.struct_name.clone());
         for item in &header.items {
             let Item::Record(r) = item else { continue };
             if r.opaque_layout.is_none() && r.body.is_none()
@@ -806,12 +825,12 @@ impl<'h> Emitter<'h> {
             for f in &ctors {
                 let method = f.name.strip_prefix(&prefix).unwrap_or(&f.name);
                 let w = ctor_wrap(&opts.wraps, &f.name);
-                let plan = match self.plan(f, 1, &w) {
+                let plan = match self.plan(f, 1, &w, "lib") {
                     Ok(p) => p,
                     Err(why) => {
                         let _ =
                             writeln!(ctor_fns, "    // `{}`: annotations ignored: {why}", f.name);
-                        match self.plan(f, 1, &Wrap::default()) {
+                        match self.plan(f, 1, &Wrap::default(), "lib") {
                             Ok(p) => p,
                             Err(_) => continue,
                         }
@@ -976,11 +995,11 @@ impl<'h> Emitter<'h> {
                 continue;
             }
             let w = Wrap::find(&opts.wraps, &f.name).unwrap_or_default();
-            let plan = match self.plan(f, 1, &w) {
+            let plan = match self.plan(f, 1, &w, "self.lib") {
                 Ok(p) => p,
                 Err(why) => {
                     let _ = writeln!(methods, "    // `{name}`: annotations ignored: {why}");
-                    match self.plan(f, 1, &Wrap::default()) {
+                    match self.plan(f, 1, &Wrap::default(), "self.lib") {
                         Ok(p) => p,
                         Err(_) => continue,
                     }

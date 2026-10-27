@@ -144,6 +144,9 @@ DEMO_API int demo_checked(int x);
 DEMO_API int demo_fail_errno(int code);
 DEMO_API const char *demo_version(void);
 DEMO_API int demo_handle_label(const demo_handle *h, char *buf, size_t len);
+DEMO_API int demo_greet(const char *name);
+/* Like sqlite3_open: the handle is stored even on failure. */
+DEMO_API int demo_handle_open(int value, demo_handle **out);
 
 static inline int demo_inline(void) { return 1; }
 

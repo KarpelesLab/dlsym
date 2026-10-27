@@ -40,8 +40,10 @@ Bindings:
                             comma-separated (repeatable):
                               str            const char * parameters -> &CStr
                               str=NAME       only that parameter
+                              str? / str?=NAME  the same, as Option<&CStr>
                               slice=PTR/LEN  PTR -> &[T] / &mut [T], LEN its length
-                              out=NAME       return NAME's value instead
+                              out=NAME       return NAME's value instead (an
+                                             --owned handle as its wrapper)
                               ret=nonzero    non-zero return -> Err(code)
                               ret=negative   negative return -> Err(code)
                               ret=errno      negative return -> Err(io::Error)

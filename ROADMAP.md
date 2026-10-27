@@ -150,8 +150,9 @@ The step from *bindings* to *safe bindings*:
       `slice=PTR/LEN`, `out=NAME`, `ret=nonzero|negative|errno|static-str`,
       `safe`. Library functions get a suffixed `NAME_rs` method next to the
       raw one; handle methods and constructors apply them directly
-- [ ] Nullable strings and pointers (`Option<&CStr>`), owned return values
-      (`Result<GzFile, _>` from an out-parameter)
+- [x] Nullable strings (`str?` → `Option<&CStr>`); out-parameters of
+      `--owned` handle types return the RAII wrapper, released on every
+      path (`sqlite3_open_rs` → `Result<Sqlite3Owned, c_int>`)
 - [ ] Possibly ship annotation sets for common system libraries
 
 ### Release

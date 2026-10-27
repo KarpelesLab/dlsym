@@ -14,8 +14,9 @@ use crate::codegen::ir::{Function, Header, Item, Type};
 /// |-----------------|-----------------------------------------------------------------|
 /// | `str`           | every `const char *` parameter becomes `&CStr`                  |
 /// | `str=NAME`      | only parameter `NAME` becomes `&CStr`                           |
+/// | `str?` / `str?=NAME` | the same, as `Option<&CStr>` (`None` passes null)         |
 /// | `slice=PTR/LEN` | `PTR` becomes `&[T]` (`&mut [T]` if not `const`; `u8` for `void` and `char`), and `LEN` is its length |
-/// | `out=NAME`      | `NAME` (a `T *`) is removed and its value returned              |
+/// | `out=NAME`      | `NAME` (a `T *`) is removed and its value returned; an [`Owned`](super::Owned) handle comes back as its wrapper, released on every path (`Option` without `ret=`; with `ret=`, a null handle on success is an error) |
 /// | `ret=nonzero`   | a non-zero return is `Err(code)`; `Ok` holds the out-parameters |
 /// | `ret=negative`  | a negative return is `Err(code)`; `Ok` holds the return value and out-parameters |
 /// | `ret=errno`     | a negative return is `Err(std::io::Error::last_os_error())`     |
@@ -33,6 +34,10 @@ pub struct Wrap {
     pub all_strings: bool,
     /// `str=NAME` parameters.
     pub strings: Vec<String>,
+    /// `str?`: every `const char *` parameter, nullable.
+    pub all_nullable_strings: bool,
+    /// `str?=NAME` parameters.
+    pub nullable_strings: Vec<String>,
     /// `slice=PTR/LEN` pairs.
     pub slices: Vec<(String, String)>,
     /// `out=NAME` parameters.
@@ -78,6 +83,8 @@ impl Wrap {
             match (key, value) {
                 ("str", None) => w.all_strings = true,
                 ("str", Some(name)) => w.strings.push(name.to_owned()),
+                ("str?", None) => w.all_nullable_strings = true,
+                ("str?", Some(name)) => w.nullable_strings.push(name.to_owned()),
                 ("slice", Some(pair)) => {
                     let (ptr, len) = pair
                         .split_once('/')
@@ -110,6 +117,9 @@ impl Wrap {
             let m = found.get_or_insert_with(Wrap::default);
             m.all_strings |= w.all_strings;
             m.strings.extend(w.strings.iter().cloned());
+            m.all_nullable_strings |= w.all_nullable_strings;
+            m.nullable_strings
+                .extend(w.nullable_strings.iter().cloned());
             m.slices.extend(w.slices.iter().cloned());
             m.outs.extend(w.outs.iter().cloned());
             m.ret = w.ret.or(m.ret);
@@ -125,6 +135,8 @@ pub(super) struct Plan {
     pub params: String,
     /// Statements before the call.
     pub setup: String,
+    /// Statements after the call (taking ownership of out-handles).
+    pub post: String,
     /// The C arguments after the skipped ones, as Rust expressions.
     pub args: Vec<String>,
     /// The return type (without ` -> `), and the expression producing it
@@ -137,9 +149,15 @@ pub(super) struct Plan {
 
 impl Emitter<'_> {
     /// Plans a wrapper for `f`, whose first `skip` parameters are supplied
-    /// by the caller (e.g. a handle). `None` if an annotation does not fit
-    /// (with the reason).
-    pub(super) fn plan(&self, f: &Function, skip: usize, w: &Wrap) -> Result<Plan, String> {
+    /// by the caller (e.g. a handle), and where `lib` is the expression for
+    /// the bindings. `Err` if an annotation does not fit (with the reason).
+    pub(super) fn plan(
+        &self,
+        f: &Function,
+        skip: usize,
+        w: &Wrap,
+        lib: &str,
+    ) -> Result<Plan, String> {
         let params = &f.params[skip..];
         let names: Vec<String> = params
             .iter()
@@ -156,16 +174,25 @@ impl Emitter<'_> {
         enum Arg {
             Plain,
             Str,
-            Slice { mutable: bool, elem: String },
+            OptStr,
+            Slice {
+                mutable: bool,
+                elem: String,
+            },
             Len(usize),
             Out(String),
+            /// An out-parameter receiving an owned handle (its wrapper).
+            OutOwned(String, String),
         }
         let mut how: Vec<Arg> = params.iter().map(|_| Arg::Plain).collect();
         for (i, p) in params.iter().enumerate() {
             let wanted = w.strings.contains(&names[i]);
-            if (w.all_strings || wanted) && self.is_c_string(&p.ty) {
+            let wanted_opt = w.nullable_strings.contains(&names[i]);
+            if (w.all_nullable_strings || wanted_opt) && self.is_c_string(&p.ty) {
+                how[i] = Arg::OptStr;
+            } else if (w.all_strings || wanted) && self.is_c_string(&p.ty) {
                 how[i] = Arg::Str;
-            } else if wanted {
+            } else if wanted || wanted_opt {
                 return Err(format!("`{}` is not a `const char *`", names[i]));
             }
         }
@@ -201,18 +228,27 @@ impl Emitter<'_> {
             if **pointee == Type::Void {
                 return Err(format!("`{out}` points to `void`"));
             }
-            how[i] = Arg::Out(rust_type(pointee));
+            let owned = self
+                .owned_wrappers
+                .iter()
+                .find(|(t, _)| self.handle_param(pointee, t).is_some());
+            how[i] = match owned {
+                Some((_, wrapper)) => Arg::OutOwned(rust_type(pointee), wrapper.clone()),
+                None => Arg::Out(rust_type(pointee)),
+            };
         }
 
         let mut plan = Plan {
             params: String::new(),
             setup: String::new(),
+            post: String::new(),
             args: Vec::new(),
             ret_ty: String::new(),
             ret_expr: String::new(),
             uses_ret: true,
         };
-        let mut outs: Vec<(String, String)> = Vec::new();
+        // Out-parameters: name, returned type, and whether it is a handle.
+        let mut outs: Vec<(String, String, bool)> = Vec::new();
         for (i, a) in how.iter().enumerate() {
             let n = ident(&names[i]);
             match a {
@@ -223,6 +259,15 @@ impl Emitter<'_> {
                 Arg::Str => {
                     let _ = write!(plan.params, ", {n}: &::core::ffi::CStr");
                     plan.args.push(format!("{n}.as_ptr()"));
+                }
+                Arg::OptStr => {
+                    let _ = write!(
+                        plan.params,
+                        ", {n}: ::core::option::Option<&::core::ffi::CStr>"
+                    );
+                    plan.args.push(format!(
+                        "{n}.map_or(::core::ptr::null(), ::core::ffi::CStr::as_ptr)"
+                    ));
                 }
                 Arg::Slice { mutable, elem } => {
                     let (r, m) = if *mutable {
@@ -253,7 +298,25 @@ impl Emitter<'_> {
                          let mut {n}: {ty} = unsafe {{ ::core::mem::zeroed() }};"
                     );
                     plan.args.push(format!("&raw mut {n}"));
-                    outs.push((n, ty.clone()));
+                    outs.push((n, ty.clone(), false));
+                }
+                Arg::OutOwned(ty, wrapper) => {
+                    let _ = writeln!(
+                        plan.setup,
+                        "        // SAFETY: generated types are valid when zeroed.\n        \
+                         let mut {n}: {ty} = unsafe {{ ::core::mem::zeroed() }};"
+                    );
+                    plan.args.push(format!("&raw mut {n}"));
+                    // Owned right after the call, so that it is released on
+                    // every path (some libraries return a handle even on
+                    // failure, e.g. `sqlite3_open`).
+                    let _ = writeln!(
+                        plan.post,
+                        "        // SAFETY: `{}` hands over the handle it stores in `{n}`.\n        \
+                         let {n} = unsafe {{ {wrapper}::from_raw({lib}, {n}) }};",
+                        f.name
+                    );
+                    outs.push((n, format!("{wrapper}<'_>"), true));
                 }
             }
         }
@@ -267,8 +330,12 @@ impl Emitter<'_> {
                 tys.push(r.clone());
                 exprs.push("ret".to_owned());
             }
-            for (n, t) in &outs {
-                tys.push(t.clone());
+            for (n, t, handle) in &outs {
+                if *handle && w.ret.is_none() {
+                    tys.push(format!("::core::option::Option<{t}>"));
+                } else {
+                    tys.push(t.clone());
+                }
                 exprs.push(n.clone());
             }
             match tys.len() {
@@ -286,6 +353,29 @@ impl Emitter<'_> {
                 _ => Err("ret= needs an integer return type".to_owned()),
             }
         };
+        // With `ret=`, the error check also requires every out-handle to be
+        // non-null: `match (ok, h1, ..) { (true, Some(h1), ..) => Ok(..), .. }`.
+        let handles: Vec<&str> = outs.iter().filter(|o| o.2).map(|o| o.0.as_str()).collect();
+        let checked = |cond: String, ok: &str, null_err: &str, err: &str| {
+            if handles.is_empty() {
+                return format!(
+                    "if {cond} {{ ::core::result::Result::Ok({ok}) }} else {{ {err} }}"
+                );
+            }
+            let somes: Vec<String> = handles
+                .iter()
+                .map(|h| format!("::core::option::Option::Some({h})"))
+                .collect();
+            format!(
+                "match ({cond}, {}) {{\n            \
+                     (true, {}) => ::core::result::Result::Ok({ok}),\n            \
+                     (true, ..) => {null_err},\n            \
+                     _ => {err},\n        \
+                 }}",
+                handles.join(", "),
+                somes.join(", ")
+            )
+        };
         match w.ret {
             None => {
                 let (ty, expr) = tuple(true);
@@ -297,25 +387,26 @@ impl Emitter<'_> {
                 let (ok, expr) = tuple(false);
                 let r = raw.clone().unwrap_or_default();
                 plan.ret_ty = format!("::core::result::Result<{ok}, {r}>");
-                plan.ret_expr = format!(
-                    "if {c} == 0 {{ ::core::result::Result::Ok({expr}) }} else {{ ::core::result::Result::Err(ret) }}"
-                );
+                let err = "::core::result::Result::Err(ret)";
+                plan.ret_expr = checked(format!("{c} == 0"), &expr, err, err);
             }
             Some(Ret::Negative) => {
                 let c = code()?;
                 let (ok, expr) = tuple(true);
                 let r = raw.clone().unwrap_or_default();
                 plan.ret_ty = format!("::core::result::Result<{ok}, {r}>");
-                plan.ret_expr = format!(
-                    "if {c} >= 0 {{ ::core::result::Result::Ok({expr}) }} else {{ ::core::result::Result::Err(ret) }}"
-                );
+                let err = "::core::result::Result::Err(ret)";
+                plan.ret_expr = checked(format!("{c} >= 0"), &expr, err, err);
             }
             Some(Ret::Errno) => {
                 let c = code()?;
                 let (ok, expr) = tuple(true);
                 plan.ret_ty = format!("::std::io::Result<{ok}>");
-                plan.ret_expr = format!(
-                    "if {c} >= 0 {{ ::core::result::Result::Ok({expr}) }} else {{ ::core::result::Result::Err(::dlsym::__private::errno_error()) }}"
+                plan.ret_expr = checked(
+                    format!("{c} >= 0"),
+                    &expr,
+                    "::core::result::Result::Err(::std::io::Error::other(\"null handle\"))",
+                    "::core::result::Result::Err(::dlsym::__private::errno_error())",
                 );
             }
             Some(Ret::StaticStr) => {
@@ -353,7 +444,10 @@ impl Emitter<'_> {
         optional: bool,
         unsafe_call: bool,
     ) -> String {
-        if plan.setup.is_empty() && (plan.ret_expr == "ret" || !plan.uses_ret) {
+        if plan.setup.is_empty()
+            && plan.post.is_empty()
+            && (plan.ret_expr == "ret" || !plan.uses_ret)
+        {
             // Nothing to convert: forward directly.
             let call = if unsafe_call {
                 format!(
@@ -382,10 +476,11 @@ impl Emitter<'_> {
             plan.ret_expr.clone()
         };
         if plan.uses_ret {
-            let _ = write!(body, "        let ret = {call};\n        {expr}\n");
+            let _ = writeln!(body, "        let ret = {call};");
         } else {
-            let _ = write!(body, "        {call};\n        {expr}\n");
+            let _ = writeln!(body, "        {call};");
         }
+        let _ = writeln!(body, "{}        {expr}", plan.post);
         body
     }
 
@@ -429,7 +524,7 @@ impl Emitter<'_> {
                 );
                 continue;
             }
-            let plan = match self.plan(f, 0, &w) {
+            let plan = match self.plan(f, 0, &w, "self") {
                 Ok(p) => p,
                 Err(why) => {
                     let _ = writeln!(self.out, "\n// skipped wrapper `{name}`: {why}");
@@ -506,6 +601,9 @@ mod tests {
         assert_eq!(w.slices, [("buf".to_owned(), "len".to_owned())]);
         assert_eq!(w.outs, ["n"]);
         assert_eq!(w.ret, Some(Ret::Errno));
+        let w = Wrap::parse("f:str?,str?=name").unwrap();
+        assert!(w.all_nullable_strings && !w.all_strings);
+        assert_eq!(w.nullable_strings, ["name"]);
         assert!(Wrap::parse("gzopen").is_err());
         assert!(Wrap::parse("gzopen:slice=buf").is_err());
         assert!(Wrap::parse("gzopen:ret=maybe").is_err());

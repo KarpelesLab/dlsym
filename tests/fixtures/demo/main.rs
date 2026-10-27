@@ -194,5 +194,20 @@ fn main() {
     assert_eq!(&label[..9], b"handle 3\0");
     drop(h);
 
+    // Nullable strings.
+    assert_eq!(d.demo_greet_rs(Some(c"bob")), 3);
+    assert_eq!(d.demo_greet_rs(None), -1);
+
+    // An owned handle from an out-parameter is released on every path.
+    // SAFETY: reading the counter only.
+    let freed = || unsafe { *d.demo_freed() };
+    let before = freed();
+    let h = d.demo_handle_open_rs(9).expect("handle");
+    assert_eq!(h.get(), 9);
+    drop(h);
+    assert_eq!(freed(), before + 1);
+    assert_eq!(d.demo_handle_open_rs(-1).map(|_| ()), Err(-1));
+    assert_eq!(freed(), before + 2, "freed on failure too");
+
     println!("demo ok");
 }

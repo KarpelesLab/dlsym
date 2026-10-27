@@ -124,3 +124,8 @@ const char *demo_version(void) { return "demo 1.0"; }
 int demo_handle_label(const demo_handle *h, char *buf, size_t len) {
     return snprintf(buf, len, "handle %d", h->value);
 }
+int demo_greet(const char *name) { return name ? (int)strlen(name) : -1; }
+int demo_handle_open(int value, demo_handle **out) {
+    *out = demo_handle_new(value);
+    return value < 0 ? -1 : 0;
+}

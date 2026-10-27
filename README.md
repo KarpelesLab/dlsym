@@ -157,22 +157,27 @@ method and gets a `_rs` one next to it (handle methods use the annotations
 directly):
 
 ```sh
-dlsym-gen sqlite3.h -l libsqlite3.so.0 \
-    --wrap 'sqlite3_open:str,out=ppDb,ret=nonzero' \
+dlsym-gen sqlite3.h -l libsqlite3.so.0 --owned sqlite3=sqlite3_close \
+    --wrap 'sqlite3_open:str,out=ppDb,ret=nonzero,safe' \
+    --wrap 'sqlite3_exec:str=sql,ret=nonzero' \
     --wrap 'sqlite3_libversion:ret=static-str,safe'
 dlsym-gen zlib.h -l libz.so.1 --owned gzFile=gzclose,gzopen \
     --wrap gzopen:str --wrap 'gzwrite:slice=buf/len,ret=negative,safe'
 ```
 
 ```rust
-let db = unsafe { s.sqlite3_open_rs(c":memory:") }?;   // Result<*mut sqlite3, c_int>
+let mut db = s.sqlite3_open_rs(c":memory:")?;          // Result<Sqlite3Owned, c_int>
+unsafe { db.exec(c"create table t(x)", None, null_mut(), null_mut()) }?;
 let v = s.sqlite3_libversion_rs();                     // Option<&CStr>, safe
+// `db` is closed when dropped, and so is the handle sqlite3_open returns
+// on failure.
 let mut f = unsafe { z.gzopen_owned(c"out.gz", c"wb") }.unwrap();
 f.gzwrite(b"hello")?;                                  // &[u8] in, Result out
 ```
 
-`safe` makes the wrapper callable without `unsafe`: it is the author's
-assertion that the function is sound for any values of the remaining
+`str?` makes strings nullable (`Option<&CStr>`). `out=` of an `--owned`
+handle type returns the handle's RAII wrapper. `safe` makes the wrapper
+callable without `unsafe`: it is the author's assertion that the function is sound for any values of the remaining
 parameters. `ret=errno` reads `errno` right after the call.
 
 Long option lists can live in a file, passed as `@zlib.args` (whitespace-
