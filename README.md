@@ -177,8 +177,9 @@ f.gzwrite(b"hello")?;                                  // &[u8] in, Result out
 
 `str?` makes strings nullable (`Option<&CStr>`). `out=` of an `--owned`
 handle type returns the handle's RAII wrapper. `safe` makes the wrapper
-callable without `unsafe`: it is the author's assertion that the function is sound for any values of the remaining
-parameters. `ret=errno` reads `errno` right after the call.
+callable without `unsafe`: it is the author's assertion that the function
+is sound for any values of the remaining parameters. `ret=errno` reads
+`errno` right after the call.
 
 Long option lists can live in a file, passed as `@zlib.args` (whitespace-
 separated arguments, `"quotes"`, `#` comments).
