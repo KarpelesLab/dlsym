@@ -3,6 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+mod wrap;
+
+pub use wrap::{Ret, Wrap};
+
 use super::ir::{
     Abi, Const, ConstValue, Enum, Field, Function, Header, Item, MacroArg, MacroFn, MemberKind,
     Record, RecordBody, RecordKind, Type, Typedef, Var,
@@ -39,6 +43,8 @@ pub struct Options {
     pub no_module_attributes: bool,
     /// Handle types to wrap in RAII owners; see [`Owned`].
     pub owned: Vec<Owned>,
+    /// Typed wrapper annotations; see [`Wrap`].
+    pub wraps: Vec<Wrap>,
 }
 
 /// An owned handle type: a pointer returned by `constructors` and released
@@ -126,6 +132,7 @@ pub fn emit(header: &Header, opts: &Options) -> String {
     }
     e.library(&functions, opts);
     e.macro_fns(header, opts);
+    e.wrappers(header, opts);
     e.owned(header, opts);
     e.objects(header, opts);
     e.out
@@ -697,25 +704,26 @@ impl<'h> Emitter<'h> {
                     );
                     continue;
                 }
-                let names: Vec<String> = f
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| p.name.as_deref().map_or_else(|| format!("arg{i}"), ident))
-                    .collect();
-                let params: Vec<String> = names
-                    .iter()
-                    .zip(&f.params)
-                    .map(|(n, p)| format!("{n}: {}", rust_type(&p.ty)))
-                    .collect();
+                let w = ctor_wrap(&opts.wraps, ctor);
+                let plan = match self.plan(f, 0, &w) {
+                    Ok(p) => p,
+                    Err(why) => {
+                        let _ = writeln!(self.out, "// `{ctor}`: annotations ignored: {why}");
+                        match self.plan(f, 0, &Wrap::default()) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        }
+                    }
+                };
                 let optional = opts.optional.iter().any(|p| glob(p, ctor));
-                let safe = opts.safe.iter().any(|p| glob(p, ctor));
+                let safe = w.safe || opts.safe.iter().any(|p| glob(p, ctor));
                 let call = format!(
                     "self.{}({}){}",
                     ident(ctor),
-                    names.join(", "),
+                    plan.args.join(", "),
                     if optional { "?" } else { "" }
                 );
+                let setup = &plan.setup;
                 let (qual, safety_doc) = if safe {
                     ("", String::new())
                 } else {
@@ -731,11 +739,12 @@ impl<'h> Emitter<'h> {
                     "    /// Calls `{ctor}` and takes ownership of the result (`None` if it is null).\n\
                      {safety_doc}    \
                      #[allow(clippy::too_many_arguments)]\n    \
-                     pub {qual}fn {method}(&self, {}) -> ::core::option::Option<{wrapper}<'_>> {{\n        \
+                     pub {qual}fn {method}(&self{}) -> ::core::option::Option<{wrapper}<'_>> {{\n\
+                     {setup}        \
                          // SAFETY: `{ctor}` returns a new handle owned by the caller.\n        \
                          unsafe {{ {wrapper}::from_raw(self, {call}) }}\n    \
                      }}\n\n",
-                    params.join(", ")
+                    plan.params
                 );
             }
         }
@@ -796,26 +805,25 @@ impl<'h> Emitter<'h> {
             let prefix = format!("{}_", r.name);
             for f in &ctors {
                 let method = f.name.strip_prefix(&prefix).unwrap_or(&f.name);
-                let names: Vec<String> = f.params[1..]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| {
-                        p.name
-                            .as_deref()
-                            .map_or_else(|| format!("arg{}", i + 1), ident)
-                    })
-                    .collect();
-                let params: String = names
-                    .iter()
-                    .zip(&f.params[1..])
-                    .map(|(n, p)| format!(", {n}: {}", rust_type(&p.ty)))
-                    .collect();
-                let args: String = names.iter().map(|n| format!(", {n}")).collect();
-                let safe = opts
-                    .safe
-                    .iter()
-                    .chain(&opts.safe_handle)
-                    .any(|p| glob(p, &f.name));
+                let w = ctor_wrap(&opts.wraps, &f.name);
+                let plan = match self.plan(f, 1, &w) {
+                    Ok(p) => p,
+                    Err(why) => {
+                        let _ = writeln!(ctor_fns, "    // `{}`: annotations ignored: {why}", f.name);
+                        match self.plan(f, 1, &Wrap::default()) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        }
+                    }
+                };
+                let (params, setup) = (&plan.params, &plan.setup);
+                let args: String = plan.args.iter().map(|a| format!(", {a}")).collect();
+                let safe = w.safe
+                    || opts
+                        .safe
+                        .iter()
+                        .chain(&opts.safe_handle)
+                        .any(|p| glob(p, &f.name));
                 let (qual, safety_doc) = if safe {
                     ("", "")
                 } else {
@@ -829,7 +837,8 @@ impl<'h> Emitter<'h> {
                     "    /// Allocates and constructs an object with [`{0}`]({lib}::{0}).\n\
                      {safety_doc}    \
                      #[allow(clippy::too_many_arguments)]\n    \
-                     pub {qual}fn {1}(lib: &'lib {lib}{params}) -> Self {{\n        \
+                     pub {qual}fn {1}(lib: &'lib {lib}{params}) -> Self {{\n\
+                     {setup}        \
                          let storage = ::dlsym::__private::ObjectStorage::<{ty}>::new();\n        \
                          // SAFETY: `storage` is uninitialized memory for one object; if the\n        \
                          // constructor unwinds, dropping `storage` frees it.\n        \
@@ -965,32 +974,28 @@ impl<'h> Emitter<'h> {
             if !used.insert(name) {
                 continue;
             }
-            let names: Vec<String> = f.params[1..]
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    p.name
-                        .as_deref()
-                        .map_or_else(|| format!("arg{}", i + 1), ident)
-                })
-                .collect();
-            let params: String = names
-                .iter()
-                .zip(&f.params[1..])
-                .map(|(n, p)| format!(", {n}: {}", rust_type(&p.ty)))
-                .collect();
-            let optional = opts.optional.iter().any(|p| glob(p, &f.name));
-            let ret = match (&f.ret, optional) {
-                (Type::Void, false) => String::new(),
-                (Type::Void, true) => " -> ::core::option::Option<()>".into(),
-                (t, false) => format!(" -> {}", rust_type(t)),
-                (t, true) => format!(" -> ::core::option::Option<{}>", rust_type(t)),
+            let w = Wrap::find(&opts.wraps, &f.name).unwrap_or_default();
+            let plan = match self.plan(f, 1, &w) {
+                Ok(p) => p,
+                Err(why) => {
+                    let _ = writeln!(methods, "    // `{name}`: annotations ignored: {why}");
+                    match self.plan(f, 1, &Wrap::default()) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    }
+                }
             };
+            let optional = opts.optional.iter().any(|p| glob(p, &f.name));
+            let ret = Self::wrapper_ret(&plan, optional);
             let call = format!(
                 "self.lib.{}(self.raw{})",
                 ident(&f.name),
-                names.iter().map(|n| format!(", {n}")).collect::<String>()
+                plan.args
+                    .iter()
+                    .map(|a| format!(", {a}"))
+                    .collect::<String>()
             );
+            let params = &plan.params;
             let receiver = if *is_const { "&self" } else { "&mut self" };
             let _ = writeln!(
                 methods,
@@ -998,33 +1003,23 @@ impl<'h> Emitter<'h> {
                 ident(&f.name),
                 ident(&opts.struct_name)
             );
-            if opts.safe.iter().any(|p| glob(p, &f.name)) {
+            let raw_safe = opts.safe.iter().any(|p| glob(p, &f.name));
+            if raw_safe || w.safe || opts.safe_handle.iter().any(|p| glob(p, &f.name)) {
+                let body = Self::wrapper_body(&plan, &call, optional, !raw_safe);
                 let _ = writeln!(
                     methods,
                     "    #[allow(clippy::too_many_arguments)]\n    \
-                         pub fn {}({receiver}{params}){ret} {{\n        {call}\n    }}\n",
+                         pub fn {}({receiver}{params}){ret} {{\n{body}    }}\n",
                     ident(name)
                 );
-            } else if opts.safe_handle.iter().any(|p| glob(p, &f.name)) {
-                let _ = writeln!(
-                    methods,
-                    "    #[allow(clippy::too_many_arguments)]\n    \
-                         pub fn {}({receiver}{params}){ret} {{\n        \
-                             // SAFETY: the handle is live, and `{}` is declared sound\n        \
-                             // with any live handle and any other arguments.\n        \
-                             unsafe {{ {call} }}\n    }}\n",
-                    ident(name),
-                    f.name
-                );
             } else {
+                let body = Self::wrapper_body(&plan, &call, optional, true);
                 let _ = writeln!(
                     methods,
                     "    ///\n    /// # Safety\n    ///\n    \
                          /// Same as calling `{0}` with the handle, which must not release it.\n    \
                          #[allow(clippy::too_many_arguments)]\n    \
-                         pub unsafe fn {1}({receiver}{params}){ret} {{\n        \
-                             // SAFETY: the handle is live; the rest is forwarded to the caller.\n        \
-                             unsafe {{ {call} }}\n    }}\n",
+                         pub unsafe fn {1}({receiver}{params}){ret} {{\n{body}    }}\n",
                     f.name,
                     ident(name)
                 );
@@ -1233,6 +1228,15 @@ impl<'h> Emitter<'h> {
         let _ = writeln!(out, "            pub {kind} {name}: {};", rust_type(&v.ty));
         out
     }
+}
+
+/// The parameter annotations of `name`'s wrap specs, for constructors
+/// (whose return value is the new object).
+fn ctor_wrap(wraps: &[Wrap], name: &str) -> Wrap {
+    let mut w = Wrap::find(wraps, name).unwrap_or_default();
+    w.ret = None;
+    w.outs.clear();
+    w
 }
 
 /// Escapes a Rust name for use as a `library!` item, adding a

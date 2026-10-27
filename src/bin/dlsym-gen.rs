@@ -33,6 +33,21 @@ Bindings:
       --safe <glob>         declare matching functions `safe fn` (callable
                             without `unsafe`); only for functions that are
                             sound with any arguments (repeatable)
+      --wrap <GLOB:ANNOTATIONS>
+                            generate typed wrappers for matching functions,
+                            as `NAME_rs` methods next to the raw ones (and
+                            directly in --owned handle methods). Annotations,
+                            comma-separated (repeatable):
+                              str            const char * parameters -> &CStr
+                              str=NAME       only that parameter
+                              slice=PTR/LEN  PTR -> &[T] / &mut [T], LEN its length
+                              out=NAME       return NAME's value instead
+                              ret=nonzero    non-zero return -> Err(code)
+                              ret=negative   negative return -> Err(code)
+                              ret=errno      negative return -> Err(io::Error)
+                              ret=static-str const char * return -> Option<&CStr>
+                              safe           the wrapper is a safe fn
+                            e.g. --wrap 'gzopen:str' --wrap 'gzwrite:slice=buf/len'
       --safe-handle <glob>  make the --owned handle methods of matching
                             functions safe (the raw functions stay unsafe);
                             only for functions that are sound with any live
@@ -78,6 +93,7 @@ struct Args {
     optional: Vec<String>,
     safe: Vec<String>,
     safe_handle: Vec<String>,
+    wraps: Vec<emit::Wrap>,
     owned: Vec<emit::Owned>,
     no_probe: bool,
     quiet: bool,
@@ -104,6 +120,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Command, String> {
             "--optional" => a.optional.push(value(&arg)?),
             "--safe" => a.safe.push(value(&arg)?),
             "--safe-handle" => a.safe_handle.push(value(&arg)?),
+            "--wrap" => a.wraps.push(emit::Wrap::parse(&value(&arg)?)?),
             "--owned" => a.owned.push(emit::Owned::parse(&value(&arg)?)?),
             "--no-probe" => a.no_probe = true,
             "--header-dir" => a.parse.header_dirs.push(value(&arg)?.into()),
@@ -281,6 +298,7 @@ fn run(args: &Args) -> Result<(), String> {
             optional,
             safe: args.safe.clone(),
             safe_handle: args.safe_handle.clone(),
+            wraps: args.wraps.clone(),
             owned: args.owned.clone(),
             no_module_attributes: false,
             comment: vec![

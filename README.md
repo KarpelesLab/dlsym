@@ -151,6 +151,30 @@ What it handles:
   libjpeg, libtiff, libwebp, fontconfig, gdbm and libuuid: every generated
   module compiles.
 
+Typed wrappers turn C strings, `(pointer, length)` pairs, out-parameters
+and error codes into Rust types. Each annotated function keeps its raw
+method and gets a `_rs` one next to it (handle methods use the annotations
+directly):
+
+```sh
+dlsym-gen sqlite3.h -l libsqlite3.so.0 \
+    --wrap 'sqlite3_open:str,out=ppDb,ret=nonzero' \
+    --wrap 'sqlite3_libversion:ret=static-str,safe'
+dlsym-gen zlib.h -l libz.so.1 --owned gzFile=gzclose,gzopen \
+    --wrap gzopen:str --wrap 'gzwrite:slice=buf/len,ret=negative,safe'
+```
+
+```rust
+let db = unsafe { s.sqlite3_open_rs(c":memory:") }?;   // Result<*mut sqlite3, c_int>
+let v = s.sqlite3_libversion_rs();                     // Option<&CStr>, safe
+let mut f = unsafe { z.gzopen_owned(c"out.gz", c"wb") }.unwrap();
+f.gzwrite(b"hello")?;                                  // &[u8] in, Result out
+```
+
+`safe` makes the wrapper callable without `unsafe`: it is the author's
+assertion that the function is sound for any values of the remaining
+parameters. `ret=errno` reads `errno` right after the call.
+
 Long option lists can live in a file, passed as `@zlib.args` (whitespace-
 separated arguments, `"quotes"`, `#` comments).
 

@@ -258,3 +258,24 @@ impl<T> Drop for ObjectStorage<T> {
         unsafe { Self::free(self.ptr) };
     }
 }
+
+/// The error for the current `errno`, read right after a failed call by
+/// wrappers generated with `ret=errno`.
+///
+/// On Windows, `errno` belongs to the C runtime, which a library may not
+/// share with Rust's; the error carries the raw `errno` value.
+pub fn errno_error() -> std::io::Error {
+    #[cfg(not(windows))]
+    {
+        std::io::Error::last_os_error()
+    }
+    #[cfg(windows)]
+    {
+        unsafe extern "C" {
+            fn _errno() -> *mut std::ffi::c_int;
+        }
+        // SAFETY: `_errno` returns the calling thread's `errno` location.
+        let errno = unsafe { *_errno() };
+        std::io::Error::other(format!("errno {errno}"))
+    }
+}

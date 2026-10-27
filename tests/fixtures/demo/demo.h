@@ -135,6 +135,16 @@ DEMO_API int demo_check(const char *version, size_t size, int flags);
 /* Declared but not defined in the library: bound as #[optional]. */
 DEMO_API int demo_not_implemented(void);
 
+/* Typed wrappers (--wrap). */
+DEMO_API size_t demo_strlen(const char *s);
+DEMO_API unsigned demo_sum_bytes(const unsigned char *data, size_t len);
+DEMO_API int demo_fill(void *buf, unsigned len, int value);
+DEMO_API int demo_parse(const char *text, int *out);
+DEMO_API int demo_checked(int x);
+DEMO_API int demo_fail_errno(int code);
+DEMO_API const char *demo_version(void);
+DEMO_API int demo_handle_label(const demo_handle *h, char *buf, size_t len);
+
 static inline int demo_inline(void) { return 1; }
 
 #endif

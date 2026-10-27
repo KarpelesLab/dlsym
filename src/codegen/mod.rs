@@ -195,6 +195,22 @@ impl Builder {
         self
     }
 
+    /// Adds typed wrappers for the functions matching a
+    /// [`Wrap`](emit::Wrap) spec (`"GLOB:ANNOTATION,..."`, e.g.
+    /// `"gzopen:str"`).
+    ///
+    /// # Panics
+    ///
+    /// If `spec` is malformed (this is meant for `build.rs`, where a panic
+    /// is the build error).
+    pub fn wrap(mut self, spec: &str) -> Self {
+        match emit::Wrap::parse(spec) {
+            Ok(w) => self.emit.wraps.push(w),
+            Err(e) => panic!("invalid wrap spec: {e}"),
+        }
+        self
+    }
+
     /// Keeps (`true`) or drops (`false`, the default for the builder) the
     /// module-level `#![allow(..)]` attributes.
     pub fn module_attributes(mut self, keep: bool) -> Self {

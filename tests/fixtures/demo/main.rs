@@ -169,5 +169,30 @@ fn main() {
     // Flexible array members are zero-length arrays.
     let _: [c_int; 0] = demo_flex::default().data;
 
+    // Typed wrappers: `_rs` methods next to the raw ones.
+    assert_eq!(d.demo_strlen_rs(c"four"), 4);
+    assert_eq!(d.demo_sum_bytes_rs(&[1, 2, 3]), 6);
+    let mut buf = [0u8; 4];
+    // SAFETY: `demo_fill` has no other requirements.
+    assert_eq!(unsafe { d.demo_fill_rs(&mut buf, 7) }, 4);
+    assert_eq!(buf, [7; 4]);
+    assert_eq!(d.demo_parse_rs(c"42"), Ok(42));
+    assert_eq!(d.demo_parse_rs(c"x"), Err(-1));
+    assert_eq!(d.demo_checked_rs(5), Ok(10));
+    assert_eq!(d.demo_checked_rs(-1), Err(-22));
+    if cfg!(unix) {
+        // Windows: the test library may use another C runtime (and errno).
+        let err = d.demo_fail_errno_rs(2).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(2));
+    }
+    assert_eq!(d.demo_version_rs(), Some(c"demo 1.0"));
+    // On owned handles, the annotations apply to the methods directly.
+    // SAFETY: `demo_handle_new` has no preconditions.
+    let h = unsafe { d.demo_handle_new_owned(3) }.expect("handle");
+    let mut label = [0u8; 16];
+    assert_eq!(h.label(&mut label), Ok(8));
+    assert_eq!(&label[..9], b"handle 3\0");
+    drop(h);
+
     println!("demo ok");
 }

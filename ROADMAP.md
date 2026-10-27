@@ -146,10 +146,12 @@ The step from *bindings* to *safe bindings*:
       function safe
 - [x] Annotations stay CLI/`Builder` options (no new file format); long
       lists go in `@file` argument files
-- [ ] Next annotations:
-  - pointer nullability; `const char *` ↔ `&CStr`
-  - `(ptr, len)` pairs ↔ slices
-  - errors, e.g. "negative return means `errno`", generating `Result`
+- [x] Typed wrappers, `--wrap 'GLOB:ANNOTATIONS'`: `str` (`&CStr`),
+      `slice=PTR/LEN`, `out=NAME`, `ret=nonzero|negative|errno|static-str`,
+      `safe`. Library functions get a suffixed `NAME_rs` method next to the
+      raw one; handle methods and constructors apply them directly
+- [ ] Nullable strings and pointers (`Option<&CStr>`), owned return values
+      (`Result<GzFile, _>` from an out-parameter)
 - [ ] Possibly ship annotation sets for common system libraries
 
 ### Release

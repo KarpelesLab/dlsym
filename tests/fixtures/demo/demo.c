@@ -3,6 +3,8 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <stdio.h>
 
 DEMO_API const int demo_const_global = 1234;
 DEMO_API int demo_counter = 0;
@@ -94,4 +96,31 @@ long double demo_long_double(void) { return 1.0L; }
 
 int demo_check(const char *version, size_t size, int flags) {
     return strcmp(version, DEMO_VERSION) == 0 && size == sizeof(demo_rect) && flags == 7;
+}
+
+size_t demo_strlen(const char *s) { return strlen(s); }
+unsigned demo_sum_bytes(const unsigned char *data, size_t len) {
+    unsigned sum = 0;
+    for (size_t i = 0; i < len; i++) sum += data[i];
+    return sum;
+}
+int demo_fill(void *buf, unsigned len, int value) {
+    memset(buf, value, len);
+    return (int)len;
+}
+int demo_parse(const char *text, int *out) {
+    char *end;
+    long v = strtol(text, &end, 10);
+    if (end == text || *end) return -1;
+    *out = (int)v;
+    return 0;
+}
+int demo_checked(int x) { return x < 0 ? -22 : x * 2; }
+int demo_fail_errno(int code) {
+    errno = code;
+    return -1;
+}
+const char *demo_version(void) { return "demo 1.0"; }
+int demo_handle_label(const demo_handle *h, char *buf, size_t len) {
+    return snprintf(buf, len, "handle %d", h->value);
 }
