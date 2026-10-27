@@ -274,8 +274,10 @@ pub fn errno_error() -> std::io::Error {
         unsafe extern "C" {
             fn _errno() -> *mut std::ffi::c_int;
         }
+        // SAFETY: no preconditions.
+        let location = unsafe { _errno() };
         // SAFETY: `_errno` returns the calling thread's `errno` location.
-        let errno = unsafe { *_errno() };
+        let errno = unsafe { *location };
         std::io::Error::other(format!("errno {errno}"))
     }
 }
