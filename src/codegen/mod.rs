@@ -55,6 +55,7 @@ pub struct Builder {
 
 /// Generated bindings.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Generated {
     /// The Rust source.
     pub code: String,

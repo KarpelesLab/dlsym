@@ -14,6 +14,7 @@ use super::ir::{
 
 /// Options controlling code generation.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Options {
     /// Name of the generated bindings struct.
     pub struct_name: String,
@@ -55,6 +56,7 @@ pub struct Options {
 /// leak, be freed twice, nor outlive the library. Each constructor gets a
 /// `{name}_owned` method returning `Option<Wrapper>` (`None` for null).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Owned {
     /// The C type of the handle: either the pointee (`demo_handle` for
     /// `demo_handle *`) or a pointer typedef (`gzFile`).
@@ -67,6 +69,20 @@ pub struct Owned {
 }
 
 impl Owned {
+    /// An owned handle of C type `type_name`, released by `free` and
+    /// returned by `constructors`.
+    pub fn new(
+        type_name: impl Into<String>,
+        free: impl Into<String>,
+        constructors: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Owned {
+            type_name: type_name.into(),
+            free: free.into(),
+            constructors: constructors.into_iter().map(Into::into).collect(),
+        }
+    }
+
     /// Parses the `TYPE=FREE[,CONSTRUCTOR...]` command-line syntax.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let (ty, rest) = spec

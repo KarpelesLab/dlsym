@@ -5,6 +5,7 @@
 
 /// Every declaration extracted from a set of headers, in emission order.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Header {
     /// Declarations, in source order (types first as needed).
     pub items: Vec<Item>,
@@ -50,6 +51,7 @@ impl Item {
 /// It becomes a method that forwards to the function. Parameter types are
 /// taken from the parameters of the called function they are passed to.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct MacroFn {
     /// The macro's name.
     pub name: String,
@@ -116,6 +118,7 @@ impl Abi {
 
 /// A function prototype.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Function {
     /// The Rust name (the symbol name for C functions).
     pub name: String,
@@ -138,6 +141,7 @@ pub struct Function {
 
 /// The class a C++ member function belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Member {
     /// The class's Rust name.
     pub class: String,
@@ -147,6 +151,7 @@ pub struct Member {
 
 /// The kind of a C++ member function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemberKind {
     /// A non-static member function (`const` ones take `*const` `this`).
     Method,
@@ -158,6 +163,7 @@ pub enum MemberKind {
 
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Param {
     /// The parameter name, if the prototype gives one.
     pub name: Option<String>,
@@ -167,6 +173,7 @@ pub struct Param {
 
 /// A global variable exported by the library.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Var {
     /// The Rust name (the symbol name for C variables).
     pub name: String,
@@ -182,6 +189,7 @@ pub struct Var {
 
 /// Whether a record is a struct or a union.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecordKind {
     /// `struct`
     Struct,
@@ -191,6 +199,7 @@ pub enum RecordKind {
 
 /// A struct or union.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Record {
     /// The Rust name.
     pub name: String,
@@ -207,6 +216,7 @@ pub struct Record {
 
 /// The layout and fields of a complete record.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct RecordBody {
     /// Size in bytes.
     pub size: u64,
@@ -218,6 +228,7 @@ pub struct RecordBody {
 
 /// A record field.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Field {
     /// The Rust name.
     pub name: String,
@@ -239,6 +250,7 @@ pub struct Field {
 
 /// An enum.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Enum {
     /// The Rust name, or `None` for an anonymous enum whose constants are
     /// emitted with the underlying integer type.
@@ -253,6 +265,7 @@ pub struct Enum {
 
 /// An enum constant.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Variant {
     /// The constant's name.
     pub name: String,
@@ -264,6 +277,7 @@ pub struct Variant {
 
 /// A typedef.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Typedef {
     /// The Rust name.
     pub name: String,
@@ -275,6 +289,7 @@ pub struct Typedef {
 
 /// A constant.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Const {
     /// The constant's name.
     pub name: String,
@@ -286,6 +301,7 @@ pub struct Const {
 
 /// A constant's value.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ConstValue {
     /// An integer of the given type.
     Int(i128, Type),

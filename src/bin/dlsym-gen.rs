@@ -292,31 +292,27 @@ fn run(args: &Args) -> Result<(), String> {
                 .into_owned()
         })
         .collect();
-    let code = emit::emit(
-        &parsed.header,
-        &emit::Options {
-            struct_name: struct_name.clone(),
-            library_names: args.libs.clone(),
-            optional,
-            safe: args.safe.clone(),
-            safe_handle: args.safe_handle.clone(),
-            wraps: args.wraps.clone(),
-            owned: args.owned.clone(),
-            no_module_attributes: false,
-            comment: vec![
-                format!("Source: {}", headers.join(", ")),
-                format!(
-                    "Generator: dlsym-gen {} ({})",
-                    env!("CARGO_PKG_VERSION"),
-                    parsed.clang_version
-                ),
-                format!(
-                    "Target: {} (struct layouts are checked at compile time)",
-                    parsed.target.as_deref().unwrap_or("host")
-                ),
-            ],
-        },
-    );
+    let mut emit_opts = emit::Options::default();
+    emit_opts.struct_name = struct_name.clone();
+    emit_opts.library_names = args.libs.clone();
+    emit_opts.optional = optional;
+    emit_opts.safe = args.safe.clone();
+    emit_opts.safe_handle = args.safe_handle.clone();
+    emit_opts.wraps = args.wraps.clone();
+    emit_opts.owned = args.owned.clone();
+    emit_opts.comment = vec![
+        format!("Source: {}", headers.join(", ")),
+        format!(
+            "Generator: dlsym-gen {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            parsed.clang_version
+        ),
+        format!(
+            "Target: {} (struct layouts are checked at compile time)",
+            parsed.target.as_deref().unwrap_or("host")
+        ),
+    ];
+    let code = emit::emit(&parsed.header, &emit_opts);
 
     if let Some(dir) = &args.crate_dir {
         write_crate(

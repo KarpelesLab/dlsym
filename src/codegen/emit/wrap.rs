@@ -27,6 +27,7 @@ use crate::codegen::ir::{Function, Header, Item, Type};
 /// raw one; methods of [`Owned`](super::Owned) handles and C++ objects, and
 /// their constructors, use the annotations directly.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct Wrap {
     /// Glob (`*`, `?`) of the functions the annotations apply to.
     pub pattern: String,
@@ -50,6 +51,7 @@ pub struct Wrap {
 
 /// How a wrapped function's return value is interpreted; see [`Wrap`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Ret {
     /// Zero is success; anything else is the error code.
     NonZero,

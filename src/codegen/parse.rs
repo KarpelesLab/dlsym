@@ -29,6 +29,7 @@ use super::ir::{
 
 /// Options for [`parse`].
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Options {
     /// The headers to parse.
     pub headers: Vec<PathBuf>,
@@ -57,6 +58,7 @@ pub struct Options {
 
 /// The result of [`parse`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Parsed {
     /// The extracted declarations.
     pub header: Header,
