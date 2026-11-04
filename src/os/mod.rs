@@ -13,8 +13,15 @@ pub mod windows;
 #[cfg(windows)]
 pub(crate) use self::windows as imp;
 
-#[cfg(not(any(unix, windows)))]
-compile_error!("dlsym supports only Unix-like and Windows targets");
+// fullrust is Linux underneath but not `cfg(unix)`: it has no libc, so
+// libraries are loaded through the system's `ld.so`, booted by `dldota`.
+#[cfg(target_os = "fullrust")]
+pub mod fullrust;
+#[cfg(target_os = "fullrust")]
+pub(crate) use self::fullrust as imp;
+
+#[cfg(not(any(unix, windows, target_os = "fullrust")))]
+compile_error!("dlsym supports only Unix-like, Windows and fullrust targets");
 
 /// Outcome of a raw symbol lookup.
 pub(crate) enum Lookup {

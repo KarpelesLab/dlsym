@@ -32,6 +32,9 @@ pub unsafe trait SymbolType: Copy + sealed::Sealed {
     fn from_address(addr: *mut c_void) -> Option<Self>;
     #[doc(hidden)]
     fn to_address(self) -> *mut c_void;
+    /// Whether this is a function pointer rather than a data pointer.
+    #[doc(hidden)]
+    const IS_FN: bool;
 }
 
 /// Function pointer types that can be invoked through
@@ -62,6 +65,7 @@ unsafe impl<T> SymbolType for *const T {
     fn to_address(self) -> *mut c_void {
         self.cast_mut().cast()
     }
+    const IS_FN: bool = false;
 }
 impl<T> sealed::Sealed for *const T {}
 
@@ -73,6 +77,7 @@ unsafe impl<T> SymbolType for *mut T {
     fn to_address(self) -> *mut c_void {
         self.cast()
     }
+    const IS_FN: bool = false;
 }
 impl<T> sealed::Sealed for *mut T {}
 
@@ -97,6 +102,7 @@ macro_rules! impl_symbol_type_fn {
             fn to_address(self) -> *mut c_void {
                 self as *mut c_void
             }
+            const IS_FN: bool = true;
         }
     };
 }

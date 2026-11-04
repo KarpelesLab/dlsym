@@ -25,6 +25,11 @@ required-features = ["codegen"]
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# fullrust (libc-free static Linux binaries) has no dynamic loader of its own:
+# dldota boots the system's.
+[target.'cfg(target_os = "fullrust")'.dependencies]
+dldota = "0.1.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -36,6 +41,9 @@ windows-sys = { version = "0.61", features = [
 all-features = true
 
 [lints.rust]
+# `fullrust` is the out-of-tree libc-free Linux target; register it so
+# `cfg(target_os = "fullrust")` doesn't warn.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("fullrust"))'] }
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
 

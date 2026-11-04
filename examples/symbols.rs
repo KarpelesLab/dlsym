@@ -8,7 +8,7 @@ use std::ffi::{CStr, c_char, c_int};
 
 use dlsym::Library;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "fullrust"))]
 const LIBM: &str = "libm.so.6";
 #[cfg(target_vendor = "apple")]
 const LIBM: &str = "/usr/lib/libm.dylib";
@@ -18,6 +18,7 @@ const LIBM: &str = "ucrtbase.dll";
 const LIBM: &str = "libm.so.5";
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "fullrust",
     target_os = "freebsd",
     target_vendor = "apple",
     windows
@@ -35,7 +36,7 @@ fn main() -> dlsym::Result<()> {
 
     // Variadic functions are called through `with`; the raw function
     // pointer cannot escape the closure without `unsafe`.
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let libc = Library::this()?;
     // SAFETY: msvcrt is a system library.
     #[cfg(windows)]

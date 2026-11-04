@@ -3,9 +3,16 @@
 version = 4
 
 [[package]]
+name = "dldota"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fc88509c45716a01a4f144c54598f4de4747445a2fbbff95d14adbba2979d8f"
+
+[[package]]
 name = "dlsym"
 version = "0.0.3"
 dependencies = [
+ "dldota",
  "libc",
  "windows-sys",
 ]

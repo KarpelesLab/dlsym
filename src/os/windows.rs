@@ -221,7 +221,7 @@ pub(crate) fn this() -> Result<Handle> {
     })
 }
 
-pub(crate) fn lookup(handle: &Handle, name: &CStr) -> Lookup {
+pub(crate) fn lookup(handle: &Handle, name: &CStr, _function: bool) -> Lookup {
     // SAFETY: the handle is live and `name` is a valid C string.
     match unsafe { GetProcAddress(handle.0.as_ptr(), name.as_ptr().cast()) } {
         Some(f) => Lookup::Found(f as *mut c_void),

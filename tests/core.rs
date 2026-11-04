@@ -5,7 +5,7 @@ use std::ffi::{CStr, c_char, c_int};
 
 use dlsym::{Error, Library, library_filename};
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 fn libc() -> Library {
     Library::this().unwrap()
 }
@@ -91,7 +91,7 @@ fn already_loaded() {
 fn open_first_returns_first_loadable() {
     let candidates = [
         "libdlsym-missing-1",
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "fullrust"))]
         "libm.so.6",
         #[cfg(target_vendor = "apple")]
         "/usr/lib/libm.dylib",
@@ -135,6 +135,7 @@ fn filenames() {
     }
 }
 
+#[cfg(not(target_os = "fullrust"))]
 #[test]
 fn paths_and_address_info() {
     #[cfg(target_os = "linux")]
@@ -195,4 +196,59 @@ fn paths_and_address_info() {
         assert!(Library::this().unwrap().path().is_some());
     }
     assert!(dlsym::AddressInfo::of(std::ptr::null()).is_none());
+}
+
+/// fullrust loads through dldota, which has no `dladdr` or link-map access.
+#[cfg(target_os = "fullrust")]
+#[test]
+fn no_address_info() {
+    // SAFETY: libm is a system library.
+    let lib = unsafe { Library::open("libm.so.6") }.unwrap();
+    // SAFETY: never called.
+    let cos = unsafe { lib.get::<*const u8>(c"cos") }.unwrap();
+    assert!(cos.info().is_none());
+    assert!(lib.path().is_none());
+}
+
+/// Data symbols are not wrapped in trampolines: `environ` points at the
+/// foreign libc's environment, which dldota copies from the host's (adding
+/// `GLIBC_TUNABLES`).
+#[cfg(target_os = "fullrust")]
+#[test]
+fn foreign_data_symbol() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (key, value) = std::env::vars_os().next().expect("an environment variable");
+    let mut wanted = key.as_bytes().to_vec();
+    wanted.push(b'=');
+    wanted.extend_from_slice(value.as_bytes());
+
+    let lib = libc();
+    // SAFETY: glibc and musl both export `environ` as a `char **`.
+    let environ = unsafe { lib.get::<*mut *const *const c_char>(c"environ") }.unwrap();
+    // SAFETY: the foreign libc initialised it during boot.
+    let mut entry = unsafe { *environ.as_ref() };
+    assert!(!entry.is_null());
+    let mut found = false;
+    // SAFETY: a NULL-terminated array of C strings.
+    while let Some(s) = unsafe { entry.as_ref() }.filter(|s| !s.is_null()) {
+        // SAFETY: each entry is a valid C string.
+        found |= unsafe { CStr::from_ptr(*s) }.to_bytes() == wanted;
+        // SAFETY: not past the terminating NULL.
+        entry = unsafe { entry.add(1) };
+    }
+    assert!(found, "{key:?} missing from the foreign environment");
+}
+
+/// `ret=errno` wrappers read the foreign libc's `errno`, not the host's.
+#[cfg(target_os = "fullrust")]
+#[test]
+fn foreign_errno() {
+    let lib = libc();
+    // SAFETY: `close` has this signature.
+    let close = unsafe { lib.get::<unsafe extern "C" fn(c_int) -> c_int>(c"close") }.unwrap();
+    // SAFETY: closing an invalid descriptor only sets `errno`.
+    assert_eq!(unsafe { close.call((-1,)) }, -1);
+    const EBADF: i32 = 9;
+    assert_eq!(dlsym::__private::errno_error().raw_os_error(), Some(EBADF));
 }

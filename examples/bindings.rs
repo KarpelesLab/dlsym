@@ -25,7 +25,7 @@ dlsym::library! {
 }
 
 fn main() -> dlsym::Result<()> {
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let lib = Library::this()?;
     // SAFETY: msvcrt is a system library.
     #[cfg(windows)]

@@ -91,6 +91,34 @@ jobs:
             # the VM's LLVM provides a usable libclang.
             cargo test --locked --all-features
 
+  fullrust:
+    name: test (linux-x86_64-fullrust, glibc + musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Build the tests as fully static, libc-free binaries (libraries are
+      # loaded through dldota), then run them against the runner's glibc
+      # loader and Alpine's musl one. Doc-tests are skipped: the fullrust
+      # toolchain ships no rustdoc.
+      - name: Build
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/src" -w /src \
+            -e CARGO_TARGET_DIR=/src/target -e RUSTFLAGS="-D warnings" \
+            --entrypoint bash ghcr.io/karpeleslab/fullrust:latest -c '
+              mkdir -p /tmp/cargo && cp /opt/fullrust/cargo/config.toml /tmp/cargo/ &&
+              CARGO_HOME=/tmp/cargo cargo test --locked --no-run --lib --tests \
+                --message-format=json-render-diagnostics' > build.json
+          jq -r 'select(.reason == "compiler-artifact" and .profile.test) | .executable // empty' build.json \
+            | sed "s|^/src|$PWD|" > bins.txt
+          test -s bins.txt
+      - name: Test against glibc
+        run: while read -r bin; do "$bin"; done < bins.txt
+      - name: Test against musl
+        run: |
+          while read -r bin; do
+            docker run --rm -v "$PWD/target:$PWD/target:ro" alpine:3.22 "$bin"
+          done < bins.txt
+
   clippy:
     name: clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

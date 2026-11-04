@@ -4,7 +4,7 @@ A single crate, `dlsym`:
 
 | Part                           | Role                                                          |
 |--------------------------------|---------------------------------------------------------------|
-| library (default)              | Runtime loader. Only depends on `libc` / `windows-sys`.       |
+| library (default)              | Runtime loader. Only depends on `libc` / `windows-sys` (`dldota` on fullrust). |
 | `codegen` feature              | `dlsym::codegen`: C header → Rust generator, for `build.rs`.  |
 | `dlsym-gen` binary (`codegen`) | Command-line front end to `dlsym::codegen`.                   |
 
@@ -43,6 +43,8 @@ or gate any new one to the binary.
       `system`, `system-unwind`; variadic `C`/`C-unwind` with 1–6 fixed args
 - [x] Unix: `OpenOptions` (lazy, global, no_delete, no_load, deep_bind),
       `LibraryExt::get_versioned` (`dlvsym`)
+- [x] fullrust (libc-free static Linux): loads through the system's `ld.so`
+      via `dldota`; tested against glibc and musl loaders in CI
 - [x] Windows: `OpenOptions` (`LOAD_LIBRARY_SEARCH_*`),
       `LibraryExt::open_already_loaded`, error dialogs suppressed while loading
 - [x] CI: Linux x86_64, macOS aarch64, Windows x86_64 and i686 (msvc), each

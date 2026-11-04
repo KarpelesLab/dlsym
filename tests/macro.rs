@@ -53,7 +53,7 @@ dlsym::library! {
 }
 
 fn libc() -> LibC {
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     let lib = Library::this().unwrap();
     // SAFETY: msvcrt is a system library.
     #[cfg(windows)]
@@ -148,7 +148,7 @@ fn send_sync() {
 }
 
 fn libc_library() -> Library {
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     return Library::this().unwrap();
     // SAFETY: msvcrt is a system library.
     #[cfg(windows)]

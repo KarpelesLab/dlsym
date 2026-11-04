@@ -194,7 +194,7 @@ pub(crate) fn this() -> Result<Handle> {
     })
 }
 
-pub(crate) fn lookup(handle: &Handle, name: &CStr) -> Lookup {
+pub(crate) fn lookup(handle: &Handle, name: &CStr, _function: bool) -> Lookup {
     // `dlsym` may legitimately return null, so the only reliable failure
     // signal is `dlerror`. Clear any stale message first.
     take_error();

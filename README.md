@@ -206,6 +206,18 @@ fields, and are never passed by value. Virtual functions are not bound.
 From a `build.rs`, use `dlsym::codegen::Builder` (see the
 [`codegen` docs](https://docs.rs/dlsym/latest/dlsym/codegen/)).
 
+## Static, libc-free binaries (fullrust)
+
+On the [fullrust](https://github.com/KarpelesLab/fullrust) target
+(`x86_64-unknown-linux-fullrust`), which builds Rust programs with no libc and
+no dynamic loader, dlsym depends on [dldota](https://crates.io/crates/dldota)
+and loads libraries through the system's own `ld.so`, booted on first use. The
+same code works unchanged; function symbols resolve to trampolines that switch
+to the system libc's thread pointer around each call. Host callbacks passed to
+foreign code must be wrapped with `dlsym::os::fullrust::context()?.callback(..)`,
+and `AddressInfo` and `Library::path` are unavailable. See
+[`src/os/fullrust.rs`](src/os/fullrust.rs) (docs.rs does not build that target).
+
 ## Compared to libloading
 
 |                                      | libloading | dlsym |

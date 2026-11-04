@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use dlsym::{Bindings, Error, Library};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "fullrust"))]
 const LIBM: &str = "libm.so.6";
 #[cfg(target_vendor = "apple")]
 const LIBM: &str = "/usr/lib/libm.dylib";
@@ -14,6 +14,7 @@ const LIBM: &str = "ucrtbase.dll";
 const LIBM: &str = "libm.so.5";
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "fullrust",
     target_os = "freebsd",
     target_vendor = "apple",
     windows
@@ -110,7 +111,7 @@ fn library_macro_reports_missing_symbols() {
     assert!(matches!(err, Error::SymbolNotFound { .. }), "{err:?}");
 }
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 #[test]
 fn this_process() {
     let me = Library::this().unwrap();

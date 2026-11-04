@@ -16,8 +16,9 @@ unsafe impl<const N: usize> Send for Symbols<N> {}
 unsafe impl<const N: usize> Sync for Symbols<N> {}
 
 /// Resolves `name`, returning null for missing `optional` symbols.
-pub fn resolve(lib: &Library, name: &CStr, optional: bool) -> Result<*mut c_void> {
-    match imp::lookup(lib.handle(), name) {
+/// `function` tells a function from a data symbol.
+pub fn resolve(lib: &Library, name: &CStr, optional: bool, function: bool) -> Result<*mut c_void> {
+    match imp::lookup(lib.handle(), name, function) {
         Lookup::Found(addr) if !addr.is_null() => Ok(addr),
         _ if optional => Ok(std::ptr::null_mut()),
         Lookup::Found(_) => Err(Error::NullSymbol { name: name.into() }),
@@ -265,9 +266,14 @@ impl<T> Drop for ObjectStorage<T> {
 /// On Windows, `errno` belongs to the C runtime, which a library may not
 /// share with Rust's; the error carries the raw `errno` value.
 pub fn errno_error() -> std::io::Error {
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "fullrust")))]
     {
         std::io::Error::last_os_error()
+    }
+    // The foreign libc's `errno`, not the host's.
+    #[cfg(target_os = "fullrust")]
+    {
+        std::io::Error::from_raw_os_error(imp::errno())
     }
     #[cfg(windows)]
     {

@@ -134,7 +134,7 @@ impl Library {
 
     fn resolve<T: SymbolType>(&self, name: impl SymbolName) -> Result<T> {
         let name = name.to_symbol_name()?;
-        let lookup = imp::lookup(&self.handle, &name);
+        let lookup = imp::lookup(&self.handle, &name, T::IS_FN);
         convert(name, lookup)
     }
 

@@ -296,11 +296,13 @@ macro_rules! __dlsym_decode {
 macro_rules! __dlsym_gen {
     // ---- load: resolve the symbol's address into its slot. ----------------
     (load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] [$link:literal]
-        [$($a:tt)*] [$vis:vis] $($x:tt)*) => {
+        [$($a:tt)*] [$vis:vis] [$($args:tt)*] [$($ret:tt)*] [$($sty:tt)*]
+        $safety:ident $kind:ident $n:ident) => {
         $crate::__dlsym_load_stmt!{{$syms $i ($crate::__private::resolve(
             $lib,
             const { $crate::__private::link_name(::core::concat!($link, "\0")) },
             $crate::__dlsym_optional!($o),
+            $crate::__dlsym_is_fn!($kind),
         )?)} [] $($a)*}
     };
     (load {$lib:expr, $syms:ident, $i:ident} $abi:literal [$o:ident] []
@@ -310,6 +312,7 @@ macro_rules! __dlsym_gen {
             $lib,
             const { $crate::__private::link_name(::core::concat!(::core::stringify!($n), "\0")) },
             $crate::__dlsym_optional!($o),
+            $crate::__dlsym_is_fn!($kind),
         )?)} [] $($a)*}
     };
 
@@ -436,6 +439,18 @@ macro_rules! __dlsym_load_stmt {
             $syms[$i] = $($e)*;
         }
         $i += 1;
+    };
+}
+
+/// `true` for a function item, `false` for a `static` (`static` or `mut`).
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __dlsym_is_fn {
+    (fn) => {
+        true
+    };
+    ($kind:ident) => {
+        false
     };
 }
 
