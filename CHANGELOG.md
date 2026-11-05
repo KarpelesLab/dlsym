@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4](https://github.com/KarpelesLab/dlsym/compare/v0.0.3...v0.0.4) - 2026-11-05
+
+### Added
+
+- fullrust support through dldota
+
+### Other
+
+- mark option, output and IR types #[non_exhaustive]
+
 ## [0.0.3](https://github.com/KarpelesLab/dlsym/compare/v0.0.2...v0.0.3) - 2026-10-27
 
 ### Added
