@@ -10,7 +10,7 @@ checksum = "3fc88509c45716a01a4f144c54598f4de4747445a2fbbff95d14adbba2979d8f"
 
 [[package]]
 name = "dlsym"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dldota",
  "libc",
