@@ -99,15 +99,17 @@ jobs:
       # Build the tests as fully static, libc-free binaries (libraries are
       # loaded through dldota), then run them against the runner's glibc
       # loader and Alpine's musl one. Doc-tests are skipped: the fullrust
-      # toolchain ships no rustdoc.
+      # toolchain ships no rustdoc. A fresh CARGO_HOME (writable, as we don't
+      # run as root) also leaves out the image's ecosystem [patch]: dlsym
+      # uses none of those crates, and the unused patches would otherwise
+      # need writing to Cargo.lock, which --locked forbids.
       - name: Build
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/src" -w /src \
             -e CARGO_TARGET_DIR=/src/target -e RUSTFLAGS="-D warnings" \
-            --entrypoint bash ghcr.io/karpeleslab/fullrust:latest -c '
-              mkdir -p /tmp/cargo && cp /opt/fullrust/cargo/config.toml /tmp/cargo/ &&
-              CARGO_HOME=/tmp/cargo cargo test --locked --no-run --lib --tests \
-                --message-format=json-render-diagnostics' > build.json
+            -e CARGO_HOME=/tmp/cargo \
+            ghcr.io/karpeleslab/fullrust:latest test --locked --no-run --lib --tests \
+            --message-format=json-render-diagnostics > build.json
           jq -r 'select(.reason == "compiler-artifact" and .profile.test) | .executable // empty' build.json \
             | sed "s|^/src|$PWD|" > bins.txt
           test -s bins.txt
