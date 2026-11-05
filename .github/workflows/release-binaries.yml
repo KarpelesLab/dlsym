@@ -93,7 +93,7 @@ jobs:
           # GitHub Actions silently drops empty `env:` values, so this is
           # a no-op for the native targets.
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
-        run: cargo build --release --locked --features codegen --bin dlsym-gen --target ${{ matrix.target }}
+        run: cargo build --release --features codegen --bin dlsym-gen --target ${{ matrix.target }}
 
       - name: Stage archive contents
         shell: bash
@@ -158,7 +158,7 @@ jobs:
       - name: Build both Apple slices
         run: |
           for t in x86_64-apple-darwin aarch64-apple-darwin; do
-            cargo build --release --locked --features codegen --bin dlsym-gen --target "$t"
+            cargo build --release --features codegen --bin dlsym-gen --target "$t"
           done
 
       - name: Lipo into a universal binary
