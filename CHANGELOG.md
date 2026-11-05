@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0](https://github.com/KarpelesLab/dlsym/compare/v0.0.4...v0.1.0) - 2026-11-05
+
+First 0.1 release. No changes since 0.0.4.
+
 ## [0.0.4](https://github.com/KarpelesLab/dlsym/compare/v0.0.3...v0.0.4) - 2026-11-05
 
 ### Added
