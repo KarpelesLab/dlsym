@@ -138,6 +138,60 @@ impl Library {
         convert(name, lookup)
     }
 
+    /// Adopts a function pointer that this library (or one it loaded)
+    /// handed out at run time instead of exporting by name: the result of
+    /// `vkGetInstanceProcAddr` or `eglGetProcAddress`, a struct member, a
+    /// vtable entry. The returned [`Symbol`] borrows the library like one
+    /// from [`get`](Library::get).
+    ///
+    /// On most platforms this only attaches the lifetime. On fullrust, such
+    /// a pointer jumps straight into foreign code and crashes when called
+    /// from the host; this wraps it in the same trampoline `get` returns.
+    /// Going through `wrap` keeps a loader for such an API free of `cfg`s.
+    /// Data pointers, and pointers that already came from `get`, are
+    /// returned as they are.
+    ///
+    /// ```no_run
+    /// # use std::ffi::{c_char, c_void};
+    /// # fn main() -> Result<(), dlsym::Error> {
+    /// # use dlsym::Library;
+    /// type GetProcAddr = unsafe extern "C" fn(*mut c_void, *const c_char) -> Option<VoidFn>;
+    /// type VoidFn = unsafe extern "C" fn();
+    /// type EnumerateVersion = unsafe extern "C" fn(*mut u32) -> i32;
+    ///
+    /// // SAFETY: the Vulkan loader has no unsound initialisers.
+    /// let vulkan = unsafe { Library::open("libvulkan.so.1")? };
+    /// // SAFETY: `vkGetInstanceProcAddr` has this signature.
+    /// let get_proc = unsafe { vulkan.get::<GetProcAddr>(c"vkGetInstanceProcAddr")? };
+    /// let name = c"vkEnumerateInstanceVersion";
+    /// // SAFETY: a null instance is allowed for global commands.
+    /// let raw = unsafe { get_proc.call((std::ptr::null_mut(), name.as_ptr())) }.unwrap();
+    /// // SAFETY: Vulkan documents this signature for that name.
+    /// let enumerate = unsafe { vulkan.wrap(std::mem::transmute::<VoidFn, EnumerateVersion>(raw))? };
+    /// let mut version = 0;
+    /// // SAFETY: `version` is a valid `uint32_t *`.
+    /// unsafe { enumerate.call((&mut version,)) };
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// `f` must point to code or data of type `T` that stays valid for as
+    /// long as this library is loaded.
+    pub unsafe fn wrap<T: SymbolType>(&self, f: T) -> Result<Symbol<'_, T>> {
+        wrap(f).map(Symbol::new)
+    }
+
+    /// Like [`wrap`](Library::wrap), keeping the library alive through the
+    /// [`Arc`] rather than a borrow.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`wrap`](Library::wrap).
+    pub unsafe fn wrap_arc<T: SymbolType>(self: &Arc<Self>, f: T) -> Result<ArcSymbol<T>> {
+        wrap(f).map(|inner| ArcSymbol::new(inner, Arc::clone(self)))
+    }
+
     /// Returns the path the library was loaded from, if the platform can
     /// tell (glibc, Apple platforms and Windows). For [`Library::this`], this
     /// is the executable.
@@ -159,6 +213,16 @@ impl Library {
         let handle = unsafe { ManuallyDrop::take(&mut this.handle) };
         imp::close(handle)
     }
+}
+
+/// Makes a foreign function pointer callable from the host.
+fn wrap<T: SymbolType>(f: T) -> Result<T> {
+    let Some(addr) = std::ptr::NonNull::new(f.to_address()).filter(|_| T::IS_FN) else {
+        return Ok(f);
+    };
+    let wrapped = imp::wrap(addr)?;
+    // Wrapping never yields null, which is all a function type rejects.
+    Ok(T::from_address(wrapped).unwrap_or(f))
 }
 
 /// Turns a raw lookup into a typed symbol or the matching error.

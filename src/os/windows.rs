@@ -262,6 +262,11 @@ pub(crate) fn library_path(handle: &Handle) -> Option<std::path::PathBuf> {
     module_path(handle.0.as_ptr())
 }
 
+/// Foreign function pointers are directly callable here.
+pub(crate) fn wrap(addr: NonNull<c_void>) -> Result<*mut c_void> {
+    Ok(addr.as_ptr())
+}
+
 pub(crate) fn address_info(addr: *const c_void) -> Option<crate::AddressInfo> {
     let mut module: HMODULE = std::ptr::null_mut();
     // SAFETY: with FROM_ADDRESS, the "name" is any address inside the

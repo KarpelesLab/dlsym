@@ -215,6 +215,8 @@ and loads libraries through the system's own `ld.so`, booted on first use. The
 same code works unchanged; function symbols resolve to trampolines that switch
 to the system libc's thread pointer around each call. Host callbacks passed to
 foreign code must be wrapped with `dlsym::os::fullrust::context()?.callback(..)`,
+function pointers that foreign code returns at run time (`vkGetInstanceProcAddr`,
+`eglGetProcAddress`, vtables) go through `Library::wrap` (a no-op elsewhere),
 and `AddressInfo` and `Library::path` are unavailable. See
 [`src/os/fullrust.rs`](src/os/fullrust.rs) (docs.rs does not build that target).
 

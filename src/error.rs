@@ -30,6 +30,12 @@ pub enum Error {
         /// The loader's description of the failure.
         message: String,
     },
+    /// A function pointer could not be made callable by
+    /// [`Library::wrap`](crate::Library::wrap).
+    Wrap {
+        /// The loader's description of the failure.
+        message: String,
+    },
     /// A library path or symbol name contained an interior NUL byte.
     InteriorNul {
         /// Byte offset of the offending NUL.
@@ -50,6 +56,9 @@ impl fmt::Display for Error {
                 write!(f, "symbol {name:?} resolved to a null address")
             }
             Error::Close { message } => write!(f, "failed to close library: {message}"),
+            Error::Wrap { message } => {
+                write!(f, "failed to wrap function pointer: {message}")
+            }
             Error::InteriorNul { position } => {
                 write!(f, "unexpected NUL byte at offset {position}")
             }

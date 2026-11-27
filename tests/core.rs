@@ -33,6 +33,53 @@ fn variadic_call() {
     assert_eq!(unsafe { CStr::from_ptr(buf.as_ptr()) }, c"42-ok");
 }
 
+/// A function pointer handed out at run time (here by `dlsym` itself, as
+/// `vkGetInstanceProcAddr` would) is callable once wrapped. On fullrust the
+/// raw pointer would run foreign code with the host's thread pointer.
+#[cfg(not(windows))]
+#[test]
+fn wrap_runtime_function_pointer() {
+    use std::ffi::c_void;
+    use std::sync::Arc;
+
+    type Strlen = unsafe extern "C" fn(*const c_char) -> usize;
+    type DlSym = unsafe extern "C" fn(*mut c_void, *const c_char) -> Option<Strlen>;
+
+    let lib = Arc::new(libc());
+    // SAFETY: `dlsym` has this signature; a null result maps to `None`.
+    let dlsym = unsafe { lib.get::<DlSym>(c"dlsym") }.unwrap();
+    // SAFETY: a null handle is `RTLD_DEFAULT` on Linux, the BSDs and macOS
+    // (where it is `-2`, hence the fallback below).
+    let raw = unsafe { dlsym.call((std::ptr::null_mut(), c"strlen".as_ptr())) }
+        // SAFETY: `RTLD_DEFAULT` on Apple platforms.
+        .or_else(|| unsafe { dlsym.call((-2isize as *mut c_void, c"strlen".as_ptr())) })
+        .expect("strlen");
+
+    // SAFETY: `raw` is libc's `strlen`.
+    let strlen = unsafe { lib.wrap(raw) }.unwrap();
+    // SAFETY: a valid C string.
+    assert_eq!(unsafe { strlen.call((c"wrapped".as_ptr(),)) }, 7);
+    // Wrapping a pointer that is already callable changes nothing.
+    // SAFETY: still `strlen`.
+    let again = unsafe { lib.wrap(strlen.into_inner()) }.unwrap();
+    assert_eq!(again.as_ptr(), strlen.as_ptr());
+    #[cfg(not(target_os = "fullrust"))]
+    assert_eq!(strlen.as_ptr(), raw as *mut c_void);
+    #[cfg(target_os = "fullrust")]
+    assert_ne!(strlen.as_ptr(), raw as *mut c_void);
+
+    // SAFETY: as above.
+    let owned = unsafe { lib.wrap_arc(raw) }.unwrap();
+    // SAFETY: a valid C string.
+    assert_eq!(unsafe { owned.call((c"arc".as_ptr(),)) }, 3);
+
+    // Data pointers pass through.
+    let data = 5u32;
+    // SAFETY: never dereferenced past `data`'s lifetime.
+    let ptr = unsafe { lib.wrap(&raw const data) }.unwrap();
+    assert_eq!(ptr.as_ptr(), (&raw const data).cast_mut().cast());
+}
+
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
 fn data_symbol() {

@@ -9,6 +9,10 @@
 //! - Function symbols resolve to trampolines that switch to the foreign libc's
 //!   thread pointer around each call, so they can be called directly. Data
 //!   symbols resolve to their real address.
+//! - A function pointer that foreign code returns at run time (from
+//!   `vkGetInstanceProcAddr`, `eglGetProcAddress`, a vtable, ...) has no
+//!   trampoline: pass it through [`Library::wrap`](crate::Library::wrap)
+//!   before calling it.
 //! - A host function passed to foreign code (a callback, e.g. a `qsort`
 //!   comparator) must be wrapped with [`Context::callback`] first; see
 //!   [`context`].
@@ -196,6 +200,17 @@ pub(crate) fn close(handle: Handle) -> Result<()> {
     foreign.ctx.close_raw(handle.0).map_err(|e| Error::Close {
         message: e.to_string(),
     })
+}
+
+/// A trampoline for the foreign function at `addr`.
+pub(crate) fn wrap(addr: NonNull<c_void>) -> Result<*mut c_void> {
+    let wrap_error = |message: String| Error::Wrap { message };
+    let foreign = Foreign::get().map_err(|m| wrap_error(m.to_owned()))?;
+    foreign
+        .ctx
+        .foreign_raw(addr)
+        .map(NonNull::as_ptr)
+        .map_err(|e| wrap_error(e.to_string()))
 }
 
 /// The foreign libc's `errno` for the calling thread.

@@ -220,6 +220,11 @@ pub(crate) fn close(handle: Handle) -> Result<()> {
     }
 }
 
+/// Foreign function pointers are directly callable here.
+pub(crate) fn wrap(addr: NonNull<c_void>) -> Result<*mut c_void> {
+    Ok(addr.as_ptr())
+}
+
 pub(crate) fn address_info(addr: *const c_void) -> Option<crate::AddressInfo> {
     // SAFETY: `Dl_info` is plain data; all-zero is a valid initial value.
     let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
