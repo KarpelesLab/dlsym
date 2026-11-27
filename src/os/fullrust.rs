@@ -16,7 +16,10 @@
 //! - A host function passed to foreign code (a callback, e.g. a `qsort`
 //!   comparator) must be wrapped with [`Context::callback`] first; see
 //!   [`context`].
-//! - Foreign calls are serialized: one host thread at a time runs foreign code.
+//! - Each host thread runs foreign code as a foreign thread of its own, with
+//!   its own `errno` and thread-local data, concurrently with the others
+//!   (with dldota before 0.1.2, all host threads shared one foreign thread
+//!   and their calls were serialized).
 //! - [`Library::this`](crate::Library::this) is the foreign global scope: the
 //!   system libc and libraries opened with `RTLD_GLOBAL`. It does not contain
 //!   the host program's own symbols.
@@ -50,8 +53,8 @@ struct Foreign {
     /// returns a trampoline even for data.
     dlsym: DlSym,
     dlerror: DlError,
-    /// Serializes `dlsym` + `dlerror` pairs: every host thread shares one
-    /// foreign thread, hence one `dlerror` slot.
+    /// Serializes `dlsym` + `dlerror` pairs: host threads can end up sharing
+    /// one foreign thread (dldota's fallback), hence one `dlerror` slot.
     data_lookup: Mutex<()>,
     errno_location: Option<ErrnoLocation>,
 }
