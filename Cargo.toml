@@ -28,7 +28,7 @@ libc = "0.2"
 # fullrust (libc-free static Linux binaries) has no dynamic loader of its own:
 # dldota boots the system's.
 [target.'cfg(target_os = "fullrust")'.dependencies]
-dldota = "0.1.1"
+dldota = "0.1.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
