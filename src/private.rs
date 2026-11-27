@@ -57,9 +57,7 @@ pub const fn sort_order<const N: usize>(names: &[&str]) -> [(u64, usize); N] {
     let mut end = N;
     while end > 1 {
         end -= 1;
-        let tmp = order[0];
-        order[0] = order[end];
-        order[end] = tmp;
+        order.swap(0, end);
         sift_down(&mut order, 0, end);
     }
     order
@@ -77,9 +75,7 @@ const fn sift_down(order: &mut [(u64, usize)], mut root: usize, end: usize) {
         if order[root].0 >= order[child].0 {
             return;
         }
-        let tmp = order[root];
-        order[root] = order[child];
-        order[child] = tmp;
+        order.swap(root, child);
         root = child;
     }
 }
