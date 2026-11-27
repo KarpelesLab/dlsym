@@ -17,9 +17,7 @@
 //!   comparator) must be wrapped with [`Context::callback`] first; see
 //!   [`context`].
 //! - Each host thread runs foreign code as a foreign thread of its own, with
-//!   its own `errno` and thread-local data, concurrently with the others
-//!   (with dldota before 0.1.2, all host threads shared one foreign thread
-//!   and their calls were serialized).
+//!   its own `errno` and thread-local data, concurrently with the others.
 //! - [`Library::this`](crate::Library::this) is the foreign global scope: the
 //!   system libc and libraries opened with `RTLD_GLOBAL`. It does not contain
 //!   the host program's own symbols.
