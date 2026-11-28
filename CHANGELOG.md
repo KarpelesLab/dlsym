@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/KarpelesLab/dlsym/compare/v0.1.0...v0.1.1) - 2026-11-28
+
+### Added
+
+- Library::wrap for function pointers returned at run time
+
+### Fixed
+
+- add Error::Wrap after the existing variants
+
+### Other
+
+- use slice::swap in the compile-time sort (clippy manual_swap)
+- drop note about older dldota
+- require dldota 0.1.2
+- fullrust host threads each get a foreign thread
+
 ## [0.1.0](https://github.com/KarpelesLab/dlsym/compare/v0.0.4...v0.1.0) - 2026-11-05
 
 First 0.1 release. No changes since 0.0.4.
