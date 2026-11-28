@@ -30,16 +30,16 @@ pub enum Error {
         /// The loader's description of the failure.
         message: String,
     },
+    /// A library path or symbol name contained an interior NUL byte.
+    InteriorNul {
+        /// Byte offset of the offending NUL.
+        position: usize,
+    },
     /// A function pointer could not be made callable by
     /// [`Library::wrap`](crate::Library::wrap).
     Wrap {
         /// The loader's description of the failure.
         message: String,
-    },
-    /// A library path or symbol name contained an interior NUL byte.
-    InteriorNul {
-        /// Byte offset of the offending NUL.
-        position: usize,
     },
 }
 
